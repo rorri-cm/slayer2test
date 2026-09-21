@@ -607,8 +607,22 @@ local function getNpcModelRoot(container)
     return m:FindFirstChild("HumanoidRootPart") or findBasePart(m, true)
 end
 
+local function findTrueMuzanRoot()
+    local deb = Workspace:FindFirstChild("Debree")
+    local regions = deb and deb:FindFirstChild("Regions")
+    local misc = regions and regions:FindFirstChild("Misc")
+    local stationary = misc and misc:FindFirstChild("StationaryNpcs")
+    local muzan = stationary and stationary:FindFirstChild("Muzan")
+    if not muzan then return nil end
+    return getNpcModelRoot(muzan)
+end
+
 local function findLiveNpcPos(name)
     local lower = string.lower(name)
+    if lower == "muzan" then
+        local root = findTrueMuzanRoot()
+        return root and root.Position or nil
+    end
     local sets = {}
     local deb = Workspace:FindFirstChild("Debree")
     if deb then
@@ -840,6 +854,10 @@ local function getTargets(targetName)
         if dReg then
             for _, r in ipairs(dReg:GetChildren()) do
                 scanActiveFolder(r:FindFirstChild("ActiveNpcs"))
+            end
+            if lowerTarget == "muzan" then
+                local misc = dReg:FindFirstChild("Misc")
+                scanActiveFolder(misc and misc:FindFirstChild("StationaryNpcs"))
             end
         end
         scanActiveFolder(deb:FindFirstChild("ActiveNpcs"))
@@ -1828,31 +1846,16 @@ task.spawn(function()
                 end
                 
                 if State.ESPMuzan and #out < ESP_POOL_SIZE then
-                    local deb = Workspace:FindFirstChild("Debree")
-                    if deb then
-                        for _, item in ipairs(deb:GetChildren()) do
-                            if #out >= ESP_POOL_SIZE then break end
-                            if item.Name:lower():find("muzan") then
-                                local root = item:FindFirstChild("HumanoidRootPart") or findBasePart(item)
-                                if root then
-                                    local dist = (root.Position - myPos).Magnitude
-                                    if dist <= maxDist then
-                                        local here = item:FindFirstChild("MuzanIsHere123")
-                                        local label
-                                        if here then
-                                            label = "[MUZAN] HERE (" .. math.floor(dist) .. "m)"
-                                        else
-                                            label = "Muzan lair (" .. math.floor(dist) .. "m)"
-                                        end
-                                        table.insert(out, {
-                                            type = "point",
-                                            name = label,
-                                            pos = root.Position,
-                                            color = Color3.fromRGB(255, 40, 70)
-                                        })
-                                    end
-                                end
-                            end
+                    local root = findTrueMuzanRoot()
+                    if root and vec3Ok(root.Position) then
+                        local dist = (root.Position - myPos).Magnitude
+                        if dist <= maxDist then
+                            table.insert(out, {
+                                type = "point",
+                                name = "[MUZAN] HERE (" .. math.floor(dist) .. "m)",
+                                pos = root.Position,
+                                color = Color3.fromRGB(255, 40, 70)
+                            })
                         end
                     end
                 end
