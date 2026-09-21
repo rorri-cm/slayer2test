@@ -47,6 +47,8 @@ local State = {
     atkNext = 0,
     pendingLoot = nil,
     collect = nil,
+    lastBossAttack = 0,
+    bossRecoveryAt = 0,
     lootPhase = nil,
     chestTap = {},
     BossBehindDistance = 2.6,
@@ -2739,6 +2741,46 @@ local function farmWatchdog()
     end
 end
 
+local function bossWatchdog()
+    if not State.AutoFarmBoss or not State.activeBoss then return end
+    if State.pendingLoot or State.lootPhase or State.collect then return end
+
+    local now = os.clock()
+    if now - (State.bossRecoveryAt or 0) < 8 then return end
+
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not vec3Ok(hrp.Position) then return end
+
+    local p = hrp.Position
+    local invalidPosition = p.Y < -500 or p.Y > 5000 or math.abs(p.X) > 10000 or math.abs(p.Z) > 10000
+    local targets = getTargets(State.activeBoss)
+    local target = nil
+    local bestDist = math.huge
+    for _, t in ipairs(targets) do
+        if t.Humanoid and (t.Humanoid.Health or 0) > 0 and vec3Ok(t.Root.Position) then
+            local d = (t.Root.Position - p).Magnitude
+            if d < bestDist then
+                bestDist = d
+                target = t
+            end
+        end
+    end
+
+    local staleAttack = now - (State.lastBossAttack or 0) > 12
+    if target and (invalidPosition or bestDist > 80 or staleAttack) then
+        State.bossRecoveryAt = now
+        State.atkNext = 0
+        safeTeleport(target.Root.Position + Vector3.new(0, 3, 0))
+        UI:Notify({ Title = "Boss Farm", Content = "Recovery: returning to " .. tostring(State.activeBoss), Type = "info", Duration = 2 })
+    elseif not target and staleAttack then
+        State.bossRecoveryAt = now
+        State.atkNext = 0
+        safeTeleport(getEntityLocation(State.activeBoss))
+        UI:Notify({ Title = "Boss Farm", Content = "Recovery: returning to " .. tostring(State.activeBoss) .. " spawn", Type = "info", Duration = 2 })
+    end
+end
+
 local fafWasFarming = false
 local fafLastStep = 0
 local function fafStep()
@@ -2840,6 +2882,7 @@ task.spawn(function()
         wasDown = down
         pcall(fafStep)
         pcall(farmWatchdog)
+        pcall(bossWatchdog)
         task.wait(0.04)
     end
 end)
@@ -3259,6 +3302,7 @@ task.spawn(function()
                                 pcall(function() dist2 = (bPos - hrp.Position).Magnitude end)
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
+                                    State.lastBossAttack = os.clock()
                                     if mouse1click then mouse1click() end
                                 end
                             end
