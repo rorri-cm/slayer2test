@@ -49,6 +49,9 @@ local State = {
     collect = nil,
     lastBossAttack = 0,
     bossRecoveryAt = 0,
+    deliveryKey = nil,
+    deliverySentAt = 0,
+    deliveryAttempts = 0,
     lootPhase = nil,
     chestTap = {},
     BossBehindDistance = 2.6,
@@ -310,6 +313,23 @@ local QuestRegistry = {
         TargetEnemy = "Mizunoto",
         Description = "Collect 5 Broken Blades from defeated Mizunoto."
     },
+    ["[Mistfall Harbor] Niko: Supply Box (delivery)"] = {
+        NpcName = "Estate Worker Niko",
+        NpcPos = Vector3.new(341.1, 938.9, 580.6),
+        Region = "Mistfall Harbor",
+        QuestOption = "Ill deliver the supply box(Lv 70)",
+        Description = "Deliver Niko's supply box to Shiori and report back to Niko.",
+        DeliverySteps = {
+            ["Deliver to Shiori"] = {
+                NpcName = "Shiori",
+                NpcPos = Vector3.new(-1814.34, 311.8, -101.07)
+            },
+            ["Report back to Niko"] = {
+                NpcName = "Estate Worker Niko",
+                NpcPos = Vector3.new(341.07, 938.91, 580.59)
+            }
+        }
+    },
     ["[Mistfall Harbor] Ginzo: Lost Jewelry Box"] = {
         NpcName = "Ginzo",
         NpcPos = Vector3.new(273.8, 944.0, 528.2),
@@ -414,6 +434,7 @@ local QuestOptions = {
     "[Windy Peak] Lucy: Bear Meat",
     "[Mistfall Harbor] Niko: Eliminate Mizunoto",
     "[Mistfall Harbor] Niko: 5 Broken Blades",
+    "[Mistfall Harbor] Niko: Supply Box (delivery)",
     "[Mistfall Harbor] Ginzo: Lost Jewelry Box",
     "[Bamboo Grove] Betty: Betty's Gemstone",
     "[Bamboo Grove] Tom: Wood & Bamboo",
@@ -1189,10 +1210,13 @@ local function getActiveQuest()
     local pData = ReplicatedStorage:FindFirstChild("Player_Service")
         and ReplicatedStorage.Player_Service:FindFirstChild("Data")
         and ReplicatedStorage.Player_Service.Data:FindFirstChild(lp.Name)
+    local equippedSlot = pData and pData:FindFirstChild("slotEquipped")
+    local slotNumber = equippedSlot and tonumber(equippedSlot.Value) or 1
+    local slotName = "Slot" .. tostring(math.floor(slotNumber))
     local holder = pData and pData:FindFirstChild("slots")
-        and pData.slots:FindFirstChild("Slot1")
-        and pData.slots.Slot1:FindFirstChild("Quests")
-        and pData.slots.Slot1.Quests:FindFirstChild("Holder")
+        and pData.slots:FindFirstChild(slotName)
+        and pData.slots[slotName]:FindFirstChild("Quests")
+        and pData.slots[slotName].Quests:FindFirstChild("Holder")
     if not holder then return nil end
     local first = nil
     for _, q in ipairs(holder:GetChildren()) do
@@ -1474,6 +1498,15 @@ local function pickAcceptText(data, wantBoss)
     return data.QuestOption
 end
 
+local function moveToQuestNpc(npcName, fallbackPos)
+    local live = findLiveNpcPos(npcName)
+    if live then
+        safeTeleport(live)
+    elseif fallbackPos then
+        safeTeleport(fallbackPos)
+    end
+end
+
 local function autoAcceptQuest(npcName, npcPos)
     local data = QuestRegistry[State.SelectedQuest]
     local wantBoss = State.QuestPickMode == "Boss Quest"
@@ -1483,7 +1516,7 @@ local function autoAcceptQuest(npcName, npcPos)
             if panicStop then panicStop() end
             return false
         end
-        smartTeleportToEntity(npcName, npcPos)
+        moveToQuestNpc(npcName, npcPos)
         task.wait(0.9)
 
         local known = pickAcceptText(data, wantBoss)
@@ -1520,6 +1553,73 @@ local function autoAcceptQuest(npcName, npcPos)
         task.wait(0.6)
     end
     return false
+end
+
+local function getDeliveryTask(activeQ, data)
+    if not activeQ or not data or not data.DeliverySteps then return nil end
+    for _, taskInfo in ipairs(activeQ.Tasks or {}) do
+        if (taskInfo.Value or 0) < (taskInfo.Max or 1) then
+            local exact = data.DeliverySteps[taskInfo.Name]
+            if exact then
+                return taskInfo, exact
+            end
+            local lowerTask = tostring(taskInfo.Name):lower()
+            for label, step in pairs(data.DeliverySteps) do
+                if lowerTask:find(tostring(label):lower(), 1, true)
+                    or tostring(label):lower():find(lowerTask, 1, true) then
+                    return taskInfo, step
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function processDeliveryQuest(activeQ, data)
+    local taskInfo, step = getDeliveryTask(activeQ, data)
+    if not taskInfo or not step then return false end
+
+    local key = tostring(data.QuestOption or State.SelectedQuest) .. "|" .. tostring(taskInfo.Name)
+    if State.deliveryKey ~= key then
+        State.deliveryKey = key
+        State.deliverySentAt = 0
+        State.deliveryAttempts = 0
+    end
+
+    State.AutoQuestTasks = false
+    moveToQuestNpc(step.NpcName, step.NpcPos)
+
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not vec3Ok(step.NpcPos) then return true end
+    if (hrp.Position - step.NpcPos).Magnitude > 10 then return true end
+
+    local now = os.clock()
+    if now - (State.deliverySentAt or 0) < 3 then return true end
+    if (State.deliveryAttempts or 0) >= 4 then
+        UI:Notify({
+            Title = "Delivery Quest",
+            Content = "The delivery was not accepted yet: " .. tostring(taskInfo.Name),
+            Type = "warn",
+            Duration = 4
+        })
+        State.deliverySentAt = now + 8
+        return true
+    end
+
+    if not RemoteEvent then return true end
+    State.deliverySentAt = now
+    State.deliveryAttempts = (State.deliveryAttempts or 0) + 1
+    pcall(function()
+        RemoteEvent:FireServer("QuestProgress", data.QuestOption, taskInfo.Name)
+    end)
+    UI:Notify({
+        Title = "Delivery Quest",
+        Content = "Submitting: " .. tostring(taskInfo.Name),
+        Type = "info",
+        Duration = 2
+    })
+    return true
 end
 
 local ESP_POOL_SIZE = 48
@@ -2761,7 +2861,11 @@ local function fafStep()
         else
             local activeQ = getActiveQuest()
             if activeQ and not activeQ.Complete then
-                if not fafWasFarming then
+                local deliveryData = QuestRegistry[State.SelectedQuest]
+                if processDeliveryQuest(activeQ, deliveryData) then
+                    fafWasFarming = false
+                    UI:Notify({ Title = "Full AutoFarm", Content = "Delivery step active: " .. tostring(activeQ.Tasks[1] and activeQ.Tasks[1].Name or "quest"), Type = "info", Duration = 2 })
+                elseif not fafWasFarming then
                     fafWasFarming = true
                     State.AutoQuestTasks = true
                     UI:Notify({ Title = "Full AutoFarm", Content = "Quest active, farming tasks", Type = "success", Duration = 3 })
@@ -2769,6 +2873,9 @@ local function fafStep()
             elseif activeQ and activeQ.Complete then
                 fafWasFarming = false
                 State.AutoQuestTasks = false
+                State.deliveryKey = nil
+                State.deliverySentAt = 0
+                State.deliveryAttempts = 0
                 local data = QuestRegistry[State.SelectedQuest]
                 if data and data.NpcPos then
                     UI:Notify({ Title = "Full AutoFarm", Content = "Quest complete, returning to " .. tostring(data.NpcName), Type = "info", Duration = 3 })
@@ -2789,6 +2896,9 @@ local function fafStep()
             else
                 fafWasFarming = false
                 State.AutoQuestTasks = false
+                State.deliveryKey = nil
+                State.deliverySentAt = 0
+                State.deliveryAttempts = 0
                 local data = QuestRegistry[State.SelectedQuest]
                 if data and data.NpcPos then
                     UI:Notify({ Title = "Full AutoFarm", Content = "No active quest, traveling to " .. tostring(data.NpcName), Type = "info", Duration = 3 })
