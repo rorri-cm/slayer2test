@@ -2,7 +2,6 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local VirtualUser = game:GetService("VirtualUser")
 
 local lp = Players.LocalPlayer
 
@@ -202,13 +201,24 @@ local RegionSpawns = {
     ["Kanoe Demon Slayer"] = Vector3.new(373, 1286, -2031),
     ["Mizunoe Demon Slayer"] = Vector3.new(-2626.7, 284, -191.2),
     ["Mizunoto Demon Slayer"] = Vector3.new(-2626.7, 284, -191.2),
-    ["Fujiko"] = Vector3.new(-2626.7, 284, -191.2),
+    ["Fujiko"] = Vector3.new(-2398.76, 40.38, 1084.24),
     ["Akazo"] = Vector3.new(-1132.6, 1381.1, -1742.5),
     ["Gyutai"] = Vector3.new(-263.1, 1043.5, -1150.5),
     ["Datai"] = Vector3.new(-163.2, 1043.5, -1136.9),
     ["Saneri"] = Vector3.new(-375.2, 1093.6, -438.8),
     ["Serpent Trainee"] = Vector3.new(-270.3, 1292.49, -1533.8),
-    ["Nezura"] = Vector3.new(-1456.63, 278.45, 927.69)
+    ["Nezura"] = Vector3.new(-1456.63, 278.45, 927.69),
+    ["Insect Trainee"] = Vector3.new(-1386.82, 264, 67.64),
+    ["Flame Trainee"] = Vector3.new(-1135.99, 1031.55, 982.62),
+    ["Rengu"] = Vector3.new(-692.92, 967.50, 824.45),
+    ["Sound Trainee"] = Vector3.new(192.06, 1351.50, -2572.49),
+    ["Stone Trainee"] = Vector3.new(2630.80, 1075.50, -515.61),
+    ["Tai Chi Trainee"] = Vector3.new(2345.01, 605, -645.24),
+    ["Thunder Trainee"] = Vector3.new(2407.56, 1075.98, -573.41),
+    ["Water Trainee"] = Vector3.new(812.33, 1021.13, 117.02),
+    ["Wind Trainee"] = Vector3.new(-909.11, 1383.50, -2630.05),
+    ["Demon Yeti"] = Vector3.new(-1417.21, -41.75, 500.32),
+    ["Yeti Demon"] = Vector3.new(-1417.21, -41.75, 500.32)
 }
 
 local RegularMobsList = {
@@ -478,7 +488,7 @@ local TeleportZones = {
     ["Mistfall Harbor (Spawn Crystal)"] = Vector3.new(135.8, 873.7, 734.1),
     ["Bamboo Grove (Bear Woods)"] = Vector3.new(540, 1122, -1023),
     ["Bamboo Grove Sanctuary"] = Vector3.new(657.4, 1021.2, 139.7),
-    ["Butterfly Estate"] = Vector3.new(32.2, 391.1, -73.9),
+    ["Butterfly Estate"] = Vector3.new(-1767.39, 314.51, -121.67),
     ["Hidden Mist Village"] = Vector3.new(1793.08, 661.30, -231.72),
     ["Iceveil Valley (Frozen Valley)"] = Vector3.new(485.3, 1222.9, -1813.4),
     ["Iceveil Settlement"] = Vector3.new(-154.62, 1351.50, -2556.21),
@@ -496,8 +506,8 @@ local BossTeleports = {
     ["Kaiden"] = Vector3.new(558.56, 1148.67, -1322.1),
     ["Hoyuzo"] = Vector3.new(758.57, 1003.51, -1406.92),
     ["Mother Bear"] = Vector3.new(550, 1122, -1035),
-    ["Fujiko"] = Vector3.new(-2626.7, 284, -191.2),
-    ["Yeti Demon"] = Vector3.new(485.3, 1222.9, -1813.4),
+    ["Fujiko"] = Vector3.new(-2398.76, 40.38, 1084.24),
+    ["Yeti Demon"] = Vector3.new(-1417.21, -41.75, 500.32),
     ["Small Yeti"] = Vector3.new(485.3, 1222.9, -1813.4),
     ["Hand Demon"] = Vector3.new(-2626.7, 284, -191.2),
     ["Domae"] = Vector3.new(-297.34, 1352.99, -3448.14),
@@ -509,21 +519,21 @@ local BossTeleports = {
     ["Tengai"] = Vector3.new(-132.74, 1351.48, -2616.27),
     ["Zentaro"] = Vector3.new(1329.34, 823.5, -1022.86),
     ["Gyorei"] = Vector3.new(2569.72, 1091.5, -730.2),
-    ["Rengu"] = Vector3.new(768.77, 1121.7, -1045.64),
+    ["Rengu"] = Vector3.new(-692.92, 967.50, 824.45),
     ["Nezura"] = Vector3.new(-1456.63, 278.45, 927.69),
     ["Yahari"] = Vector3.new(809.68, 1021.01, -632.32),
     ["Sumari"] = Vector3.new(400.17, 1020.5, -596.86),
-    ["Flame Trainee"] = Vector3.new(-263.1, 1043.5, -1150.5),
-    ["Thunder Trainee"] = Vector3.new(-263.1, 1043.5, -1150.5),
-    ["Wind Trainee"] = Vector3.new(-263.1, 1043.5, -1150.5),
-    ["Stone Trainee"] = Vector3.new(-263.1, 1043.5, -1150.5),
-    ["Insect Trainee"] = Vector3.new(-263.1, 1043.5, -1150.5),
-    ["Sound Trainee"] = Vector3.new(-263.1, 1043.5, -1150.5),
+    ["Flame Trainee"] = Vector3.new(-1135.99, 1031.55, 982.62),
+    ["Thunder Trainee"] = Vector3.new(2407.56, 1075.98, -573.41),
+    ["Wind Trainee"] = Vector3.new(-909.11, 1383.50, -2630.05),
+    ["Stone Trainee"] = Vector3.new(2630.80, 1075.50, -515.61),
+    ["Insect Trainee"] = Vector3.new(-1386.82, 264, 67.64),
+    ["Sound Trainee"] = Vector3.new(192.06, 1351.50, -2572.49),
     ["Serpent Trainee"] = Vector3.new(-270.3, 1292.49, -1533.8),
-    ["Water Trainee Sabito"] = Vector3.new(-263.1, 1043.5, -1150.5),
     ["Soryu Trainee Goki"] = Vector3.new(-424.5, 289.1, 540.4),
-    ["Tai Chi Trainee Suzume"] = Vector3.new(-263.1, 1043.5, -1150.5),
+    ["Tai Chi Trainee Suzume"] = Vector3.new(2345.01, 605, -645.24),
     ["Reaper Trainee Kuzan"] = Vector3.new(-1231.91, 1376.61, -3013.45),
+    ["Water Trainee Sabito"] = Vector3.new(812.33, 1021.13, 117.02),
     ["Muzan"] = Vector3.new(2466.37, 1079.63, 2334.54)
 }
 
@@ -543,6 +553,11 @@ local TrainerTeleports = {
 local WorkoutTeleports = {
     ["Boulder Push (Strength)"] = Vector3.new(-311.6, 1071.6, -579.6),
     ["Boulder Split (Attack Power)"] = Vector3.new(-1041.4, 1131.0, -589.3)
+}
+
+local ItemLocations = {
+    ["Nightfall Scythe"] = Vector3.new(-1195.56, 966.71, -3185.92),
+    ["Nightfall Claws"] = Vector3.new(-1812.44, -44.33, 438.04)
 }
 
 local function isPlayerModel(m)
@@ -596,7 +611,7 @@ local function getEntityLocation(name)
     elseif lower:find("bear") or lower:find("bamboo") or lower:find("hoyuzo") or lower:find("kaiden") or lower:find("grove") or lower:find("lancer") or lower:find("prowler") then
         return Vector3.new(540, 1122, -1023)
     elseif lower:find("butterfly") or lower:find("estate") or lower:find("shiori") or lower:find("ren") or lower:find("shinora") or lower:find("lesser") or lower:find("greater") then
-        return Vector3.new(32.2, 391.1, -73.9)
+        return Vector3.new(-1767.39, 314.51, -121.67)
     elseif lower:find("harbor") or lower:find("mistfall") or lower:find("niko") or lower:find("ginzo") or lower:find("jeso") or lower:find("mizunoto") or lower:find("dock") then
         return Vector3.new(135.8, 873.7, 734.1)
     elseif lower:find("hidden mist") or lower:find("gyutai") or lower:find("datai") or lower:find("reaper") or lower:find("yahari") or lower:find("sumari") or lower:find("arena") then
@@ -2912,7 +2927,7 @@ local CrystalWaypoints = {
     { Region = "Windy Peak", Name = "Windy Peak", Pos = Vector3.new(-650, 1245, -1100) },
     { Region = "Bamboo Grove", Name = "Bamboo Grove Sanctuary", Pos = Vector3.new(540, 1122, -1023) },
     { Region = "Bamboo Grove", Name = "Bamboo Grove", Pos = Vector3.new(657.4, 1021.2, 139.7) },
-    { Region = "Butterfly Estate", Name = "Butterfly Estate", Pos = Vector3.new(32.2, 391.1, -73.9) },
+    { Region = "Butterfly Estate", Name = "Butterfly Estate", Pos = Vector3.new(-1767.39, 314.51, -121.67) },
     { Region = "Hidden Mist Village", Name = "Hidden Mist Village", Pos = Vector3.new(-263.1, 1043.5, -1150.5) },
     { Region = "Iceveil Valley", Name = "Iceveil Settlement", Pos = Vector3.new(485.3, 1222.9, -1813.4) },
     { Region = "Final Selection Plains", Name = "Final Selection", Pos = Vector3.new(-2626.7, 284, -191.2) }
@@ -3155,11 +3170,6 @@ end)
 
 MiscSec:Toggle("Anti-AFK", false, function(val)
     State.AntiAFK = val
-    if val then
-        UI:Notify({ Title = "Anti-AFK", Content = "Active (20-min kick bypassed)", Type = "success", Duration = 2 })
-    else
-        UI:Notify({ Title = "Anti-AFK", Content = "Disabled", Type = "warn", Duration = 2 })
-    end
 end)
 
 MiscSec:Toggle("NoClip", false, function(val)
@@ -3555,31 +3565,25 @@ task.spawn(function()
     end
 end)
 
-pcall(function()
-    local player = lp or Players.LocalPlayer
-    if player and player.Idled then
-        player.Idled:Connect(function()
-            if State.AntiAFK then
-                pcall(function()
-                    VirtualUser:CaptureController()
-                    VirtualUser:ClickButton2(Vector2.new())
-                end)
-            end
-        end)
-    end
-end)
-
 task.spawn(function()
+    math.randomseed(math.floor(os.clock() * 100000))
+    local moveKeys = { 87, 65, 83, 68 }
+    local nextPulse = 0
     while State.Running do
-        if State.AntiAFK then
+        local now = os.clock()
+        if State.AntiAFK and now >= nextPulse then
+            local key = moveKeys[math.random(1, #moveKeys)]
             pcall(function()
-                VirtualUser:CaptureController()
-                VirtualUser:ClickButton2(Vector2.new(100, 100))
-                task.wait(0.1)
-                VirtualUser:Button2Up(Vector2.new(100, 100))
+                if setrobloxinput then setrobloxinput(true) end
+                keypress(key)
+                task.wait(0.02)
+                keyrelease(key)
             end)
+            nextPulse = now + 300
+        elseif not State.AntiAFK then
+            nextPulse = now + 300
         end
-        task.wait(90)
+        task.wait(0.1)
     end
 end)
 
