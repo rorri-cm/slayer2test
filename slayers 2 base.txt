@@ -3341,7 +3341,8 @@ local function bossWatchdog()
     local target = nil
     local bestDist = math.huge
     for _, t in ipairs(targets) do
-        if t.Humanoid and (t.Humanoid.Health or 0) > 0 and vec3Ok(t.Root.Position) then
+        local exactBossName = t.Name and t.Name:lower() == State.activeBoss:lower()
+        if (exactBossName or t.Boss) and t.Humanoid and (t.Humanoid.Health or 0) > 0 and vec3Ok(t.Root.Position) then
             local d = (t.Root.Position - p).Magnitude
             if d < bestDist then
                 bestDist = d
@@ -3567,21 +3568,22 @@ end)
 
 task.spawn(function()
     math.randomseed(math.floor(os.clock() * 100000))
-    local moveKeys = { 87, 65, 83, 68 }
+    local moveKeys = { 78 }
     local nextPulse = 0
     while State.Running do
         local now = os.clock()
         if State.AntiAFK and now >= nextPulse then
             local key = moveKeys[math.random(1, #moveKeys)]
-            pcall(function()
-                if setrobloxinput then setrobloxinput(true) end
-                keypress(key)
-                task.wait(0.02)
-                keyrelease(key)
-            end)
-            nextPulse = now + 300
+            if keypress and keyrelease then
+                pcall(function()
+                    if setrobloxinput then setrobloxinput(true) end
+                    keypress(key)
+                    keyrelease(key)
+                end)
+            end
+            nextPulse = now + 150
         elseif not State.AntiAFK then
-            nextPulse = now + 300
+            nextPulse = 0
         end
         task.wait(0.1)
     end
@@ -3920,10 +3922,13 @@ task.spawn(function()
                 local target = nil
                 local bestDist = math.huge
                 for _, t in ipairs(targets) do
-                    local d = (vec3Ok(t.Root.Position) and (t.Root.Position - hrp.Position).Magnitude) or math.huge
-                    if d < bestDist then
-                        bestDist = d
-                        target = t
+                    local exactBossName = t.Name and t.Name:lower() == bossName:lower()
+                    if exactBossName or t.Boss then
+                        local d = (vec3Ok(t.Root.Position) and (t.Root.Position - hrp.Position).Magnitude) or math.huge
+                        if d < bestDist then
+                            bestDist = d
+                            target = t
+                        end
                     end
                 end
                 
@@ -3986,7 +3991,8 @@ task.spawn(function()
                         local h = target.Humanoid and target.Humanoid.Health
                         bossDead = (h == nil) or (h <= 0)
                     end)
-                    if bossDead and target.Boss then
+                    local exactBossName = target.Name and target.Name:lower() == bossName:lower()
+                    if bossDead and (target.Boss or exactBossName) then
                         local lootPos = bossLastPos
                         local lootChar = lp.Character
                         local lootRoot = lootChar and lootChar:FindFirstChild("HumanoidRootPart")
