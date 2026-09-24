@@ -1462,7 +1462,7 @@ local function crowFarmStep(now, combo)
 
         if not target then
             releaseAimLock()
-            if State.CrowSawBoss and now - (State.CrowLastAliveAt or now) > 6 then
+            if State.CrowSawBoss and now - (State.CrowLastAliveAt or now) > 1.5 then
                 State.CrowSawBoss = false
                 State.CrowPhase = "loot"
                 State.pendingLoot = { pos = State.CrowLastPosition or hrp.Position, t = now }
@@ -1556,10 +1556,31 @@ local function lootNear(pos, range)
             if dist <= range then
                 local key = ch.Name .. "@" .. math.floor(ch.Root.Position.X) .. "," .. math.floor(ch.Root.Position.Z)
                 local last = State.chestTap[key]
-                if not last or (now - last) > 45 then
+                local dedupeFor = State.CrowFarm and 5 or 45
+                if not last or (now - last) > dedupeFor then
                     State.chestTap[key] = now
                     local root = ch.Root
                     table.insert(out, 1, { get = function() return root.Position end, tap = true, side = true })
+                end
+            end
+        end
+    end
+    if State.CrowFarm then
+        local folder = Workspace:FindFirstChild("Chests")
+        if folder then
+            for _, chest in ipairs(folder:GetChildren()) do
+                if chest:FindFirstChild("SealVFX") then
+                    local root = chest:FindFirstChild("RootPart") or findBasePart(chest)
+                    if root and vec3Ok(root.Position) and (root.Position - pos).Magnitude <= range then
+                        local chestPos = root.Position
+                        local key = chest.Name .. "@" .. math.floor(chestPos.X) .. "," .. math.floor(chestPos.Z)
+                        local last = State.chestTap[key]
+                        local dedupeFor = State.CrowFarm and 5 or 45
+                        if not last or (now - last) > dedupeFor then
+                            State.chestTap[key] = now
+                            table.insert(out, 1, { get = function() return root.Position end, tap = true, side = true })
+                        end
+                    end
                 end
             end
         end
@@ -4641,7 +4662,7 @@ task.spawn(function()
             local now = os.clock()
             if State.collect then
                 pcall(collectStep, now)
-            elseif State.pendingLoot and (now - State.pendingLoot.t) > 1.0 then
+            elseif State.pendingLoot and (now - State.pendingLoot.t) > (State.CrowFarm and 0.25 or 1.0) then
                 State.lootPhase = { pos = State.pendingLoot.pos, t0 = now, last = now }
                 State.pendingLoot = nil
                 UI:Notify({ Title = "Boss Loot", Content = "Boss down, collecting drops...", Type = "info", Duration = 3 })
@@ -4651,7 +4672,8 @@ task.spawn(function()
                 if #items > 0 then
                     phase.last = now
                     collectStart(items, "Boss drops")
-                elseif (now - phase.last) > (State.LootWait or 5) or (now - phase.t0) > 45 then
+                elseif (now - phase.last) > (State.CrowFarm and math.max(State.LootWait or 5, 15) or (State.LootWait or 5))
+                    or (now - phase.t0) > 45 then
                     State.lootPhase = nil
                     State.pendingLoot = nil
                     if not State.CrowFarm then
