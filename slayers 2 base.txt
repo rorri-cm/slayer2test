@@ -1076,17 +1076,31 @@ local function autoSkillStep(now, distance, targetModel)
 end
 
 local function clickAttackInput()
-    pcall(function() if mouse1release then mouse1release() end end)
-    pcall(function() if setrobloxinput then setrobloxinput(true) end end)
-    if mouse1press and mouse1release then
-        local pressed = pcall(mouse1press)
-        if pressed then
+    if not gameHasFocus() then return false end
+    local camera = Workspace.CurrentCamera
+    if not camera or not mousemoveabs then return false end
+
+    local viewport = camera.ViewportSize
+    local mouse = lp:GetMouse()
+    local oldX, oldY
+    pcall(function() oldX, oldY = mouse.X, mouse.Y end)
+    local safeX = math.floor(viewport.X * 0.5)
+    local safeY = math.floor(viewport.Y * 0.5)
+
+    pcall(function()
+        if setrobloxinput then setrobloxinput(true) end
+        mousemoveabs(safeX, safeY)
+        task.wait(0.015)
+        if mouse1press and mouse1release then
+            mouse1press()
             task.wait(0.035)
-            pcall(mouse1release)
-            return
+            mouse1release()
+        elseif mouse1click then
+            mouse1click()
         end
-    end
-    if mouse1click then pcall(mouse1click) end
+        if oldX and oldY then mousemoveabs(oldX, oldY) end
+    end)
+    return true
 end
 
 local function releaseAimLock()
@@ -4555,6 +4569,7 @@ task.spawn(function()
                                 pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
+                                    clickAttackInput()
                                 end
                             end
                         end
@@ -4713,6 +4728,7 @@ task.spawn(function()
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
                                     State.lastBossAttack = os.clock()
+                                    clickAttackInput()
                                 end
                             end
                         end
@@ -5030,6 +5046,7 @@ task.spawn(function()
                                         pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                         if dist2 <= (State.SwingReach or 20) then
                                             combo = sendCombatAttack(char, style, combo)
+                                            clickAttackInput()
                                         end
                                     end
                                 end
