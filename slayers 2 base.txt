@@ -1077,20 +1077,8 @@ end
 
 local function clickAttackInput()
     if not gameHasFocus() then return false end
-    local camera = Workspace.CurrentCamera
-    if not camera or not mousemoveabs then return false end
-
-    local viewport = camera.ViewportSize
-    local mouse = lp:GetMouse()
-    local oldX, oldY
-    pcall(function() oldX, oldY = mouse.X, mouse.Y end)
-    local safeX = math.floor(viewport.X * 0.5)
-    local safeY = math.floor(viewport.Y * 0.5)
-
     pcall(function()
         if setrobloxinput then setrobloxinput(true) end
-        mousemoveabs(safeX, safeY)
-        task.wait(0.015)
         if mouse1press and mouse1release then
             mouse1press()
             task.wait(0.035)
@@ -1098,7 +1086,6 @@ local function clickAttackInput()
         elseif mouse1click then
             mouse1click()
         end
-        if oldX and oldY then mousemoveabs(oldX, oldY) end
     end)
     return true
 end
@@ -4569,7 +4556,6 @@ task.spawn(function()
                                 pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
-                                    clickAttackInput()
                                 end
                             end
                         end
@@ -4728,7 +4714,6 @@ task.spawn(function()
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
                                     State.lastBossAttack = os.clock()
-                                    clickAttackInput()
                                 end
                             end
                         end
@@ -5046,7 +5031,6 @@ task.spawn(function()
                                         pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                         if dist2 <= (State.SwingReach or 20) then
                                             combo = sendCombatAttack(char, style, combo)
-                                            clickAttackInput()
                                         end
                                     end
                                 end
