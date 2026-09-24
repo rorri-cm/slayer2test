@@ -6,16 +6,15 @@ local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 
 if _G.Slayers2Hub then
-    _G.Slayers2Hub.Running = false
-    if _G.Slayers2Hub.blackMarketConn then
-        pcall(function() _G.Slayers2Hub.blackMarketConn:Disconnect() end)
+    local old = _G.Slayers2Hub
+    old.Running = false
+    for _, field in ipairs({ "blackMarketConn", "aimConn", "drawConn", "tickConn", "characterConn", "humanoidDiedConn" }) do
+        local connection = old[field]
+        if connection then pcall(function() connection:Disconnect() end) end
+        old[field] = nil
     end
-    if _G.Slayers2Hub.fishConn then
-        pcall(function() _G.Slayers2Hub.fishConn:Disconnect() end)
-    end
-    if _G.Slayers2Hub.ClearESP then
-        pcall(_G.Slayers2Hub.ClearESP)
-    end
+    if old.ClearESP then pcall(old.ClearESP) end
+    if old.win then pcall(function() old.win:Destroy() end) end
     task.wait(0.2)
 end
 
@@ -28,9 +27,6 @@ local State = {
     MobHeightOffset = 3.8,
     MobBehindDistance = 2.4,
     MobAttackDelay = 0,
-    FastAttack = false,
-    FastAttackBurst = 10,
-    ReachAssist = false,
     AutoFarmBoss = false,
     CrowFarm = false,
     CrowSlot = 2,
@@ -38,6 +34,7 @@ local State = {
     CrowPhase = "idle",
     CrowTarget = nil,
     CrowNextAt = 0,
+    CrowMenuScanAt = 0,
     CrowCombo = 1,
     CrowQuestId = nil,
     CrowPreviousQuestId = nil,
@@ -78,12 +75,12 @@ local State = {
     lootPhase = nil,
     chestTap = {},
     BossBehindDistance = 2.6,
-    AutoParry = false,
-    HealthSafeguard = false,
-    BossAttackDelay = 0,
     AimLock = false,
     AimGain = 0.55,
     aimRmbDown = false,
+    aimTargetPart = nil,
+    aimConn = nil,
+    wasGameFocused = nil,
     AutoQuestTasks = false,
     SelectedQuest = "[Windy Peak] Krue: 3 Bandits",
     QuestReturnAfter = false,
@@ -92,15 +89,6 @@ local State = {
     questWaitUntil = 0,
     questWaitKey = nil,
     questWaitWarned = false,
-    AutoCompleteTraining = false,
-    AutoFish = false,
-    FishLead = 0.12,
-    FishPause = 1.0,
-    FishTimeout = 30,
-    fishConn = nil,
-    fish = nil,
-    AutoSpamSkills = false,
-    SkillSpamInterval = 2.0,
     SkillGap = 0.3,
     SkillConfig = {},
     NoClip = false,
@@ -118,6 +106,11 @@ local State = {
     ESPDistance = 1200,
     UnlockingLocations = false,
     blackMarketConn = nil,
+    drawConn = nil,
+    tickConn = nil,
+    characterConn = nil,
+    humanoidDiedConn = nil,
+    win = nil,
     FullAutoFarm = false,
     QuestPickMode = "Normal NPC Quest",
     SpamZX = false
@@ -143,11 +136,15 @@ local function resetCombatInputAfterRespawn()
 end
 
 local function bindCombatCharacter(character)
+    if State.humanoidDiedConn then
+        pcall(function() State.humanoidDiedConn:Disconnect() end)
+        State.humanoidDiedConn = nil
+    end
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     pcall(function()
         local died = humanoid and humanoid.Died
         if died and died.Connect then
-            died:Connect(resetCombatInputAfterRespawn)
+            State.humanoidDiedConn = died:Connect(resetCombatInputAfterRespawn)
         end
     end)
 end
@@ -156,7 +153,7 @@ pcall(bindCombatCharacter, lp.Character)
 pcall(function()
     local characterAdded = lp.CharacterAdded
     if characterAdded and characterAdded.Connect then
-        characterAdded:Connect(function(character)
+        State.characterConn = characterAdded:Connect(function(character)
             resetCombatInputAfterRespawn()
             task.wait(0.25)
             bindCombatCharacter(character)
@@ -187,10 +184,7 @@ local win = Lib:CreateWindow({
     accentA = Color3.fromRGB(122, 134, 255),
     accentB = Color3.fromRGB(189, 130, 255)
 })
-pcall(function()
-    Lib:SetAutoSave(true)
-    Lib:SetAutoLoad("slayers2_base")
-end)
+State.win = win
 
 local UI = { Alive = true }
 function UI:Notify(cfg)
@@ -212,37 +206,6 @@ local SignalEvent = ReplicatedStorage:FindFirstChild("Communication")
     and ReplicatedStorage.Communication.ServerAndClient:FindFirstChild("Signals")
     and ReplicatedStorage.Communication.ServerAndClient.Signals:FindFirstChild("SignalEvent")
 local RemoteEvent = SignalEvent and SignalEvent:FindFirstChild("Event")
-
-local function getPlayerValues()
-    local ps = ReplicatedStorage:FindFirstChild("Player_Service")
-    local vals = ps and ps:FindFirstChild("Values")
-    return vals and vals:FindFirstChild(lp.Name)
-end
-
-local function findNearestTrainingPrompt(hrp, maxDist)
-    local tr = Workspace:FindFirstChild("Training")
-    if not tr or not hrp then return nil, nil end
-    local bestPrompt = nil
-    local bestPart = nil
-    local bestDist = maxDist or 45.0
-    
-    for _, folder in ipairs(tr:GetChildren()) do
-        for _, desc in ipairs(folder:GetDescendants()) do
-            if desc.Name == "ProximityPrompt" or desc.ClassName == "ProximityPrompt" then
-                local part = desc.Parent
-                if part and (part.ClassName == "Part" or part.ClassName == "MeshPart") then
-                    local d = (part.Position - hrp.Position).Magnitude
-                    if d < bestDist then
-                        bestDist = d
-                        bestPrompt = desc
-                        bestPart = part
-                    end
-                end
-            end
-        end
-    end
-    return bestPrompt, bestPart
-end
 
 local RegionSpawns = {
     ["Bandit"] = Vector3.new(-287, 1224, -1008),
@@ -616,11 +579,6 @@ local TrainerTeleports = {
     ["Lamplighter Isamu"] = Vector3.new(1082.2, 1425.7, -749.0)
 }
 
-local WorkoutTeleports = {
-    ["Boulder Push (Strength)"] = Vector3.new(-311.6, 1071.6, -579.6),
-    ["Boulder Split (Attack Power)"] = Vector3.new(-1041.4, 1131.0, -589.3)
-}
-
 local ItemLocations = {
     ["Nightfall Scythe"] = Vector3.new(-1195.56, 966.71, -3185.92),
     ["Nightfall Claws"] = Vector3.new(-1812.44, -44.33, 438.04)
@@ -707,7 +665,14 @@ local function findBasePart(container, recursive)
     return nil
 end
 
+local function gameHasFocus()
+    if not isrbxactive then return true end
+    local ok, focused = pcall(isrbxactive)
+    return not ok or focused == true
+end
+
 local function safeTeleport(pos)
+    if not gameHasFocus() then return false end
     if not vec3Ok(pos) then return end
     local char = lp.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -802,6 +767,7 @@ local function findLiveNpcPos(name)
 end
 
 local function smartTeleportToEntity(name, fallbackPos)
+    if not gameHasFocus() then return end
     local char = lp.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
@@ -1128,6 +1094,7 @@ local function releaseAimLock()
         pcall(function() if mouse2release then mouse2release() end end)
     end
     State.aimRmbDown = false
+    State.aimTargetPart = nil
 end
 
 local function aimLockStep(targetModel, targetRoot)
@@ -1143,12 +1110,28 @@ local function aimLockStep(targetModel, targetRoot)
         local ok, active = pcall(isrbxactive)
         if ok and not active then releaseAimLock(); return end
     end
+    local targetPart = targetModel and targetModel:FindFirstChild("Head") or targetRoot
+    if not targetPart then releaseAimLock(); return end
+    State.aimTargetPart = targetPart
+end
+
+local function aimLockRenderStep()
+    local targetPart = State.aimTargetPart
+    if not State.AimLock or not targetPart or State.collect or State.lootPhase or State.pendingLoot then
+        releaseAimLock()
+        return
+    end
+    if win and win.IsOpen then
+        local openOk, isOpen = pcall(function() return win:IsOpen() end)
+        if openOk and isOpen then releaseAimLock(); return end
+    end
+    if isrbxactive then
+        local activeOk, active = pcall(isrbxactive)
+        if activeOk and not active then releaseAimLock(); return end
+    end
 
     local camera = Workspace.CurrentCamera
     if not camera then releaseAimLock(); return end
-    local targetPart = targetModel and targetModel:FindFirstChild("Head") or targetRoot
-    if not targetPart then releaseAimLock(); return end
-
     local ok, cameraCFrame, targetPos = pcall(function()
         return camera.CFrame, targetPart.Position
     end)
@@ -1176,9 +1159,23 @@ local function aimLockStep(targetModel, targetRoot)
     dx = math.clamp(dx, -900, 900)
     dy = math.clamp(dy, -600, 600)
     pcall(function()
+        if setrobloxinput then setrobloxinput(true) end
         if mousemoverel then mousemoverel(dx, dy) end
     end)
 end
+
+State.aimConn = RunService.RenderStepped:Connect(function()
+    if not State.Running then
+        releaseAimLock()
+        if State.aimConn then State.aimConn:Disconnect(); State.aimConn = nil end
+        return
+    end
+    local ok, err = pcall(aimLockRenderStep)
+    if not ok and os.clock() - (State.aimErrorAt or 0) > 5 then
+        State.aimErrorAt = os.clock()
+        warn("[Aim Lock] " .. tostring(err))
+    end
+end)
 
 local function stanceGoal(tRoot, tPos, mode, offset)
     if mode == "On Top" or mode == "Head-Stomp (Directly on Top)" or mode == "Sky God-Hover (Directly Above)" then
@@ -1226,6 +1223,8 @@ local function applyStance(hrp, tRoot, tPos, mode, offset)
 end
 
 local getEquippedStyle, getActiveQuest, getDialogueUI, collectChoices, uiClick
+local pauseFarmWhenUnfocused
+local farmLastAct
 
 local function sendCombatAttack(char, style, combo)
     if not RemoteEvent then return combo end
@@ -1344,6 +1343,7 @@ end
 
 local function crowFarmStep(now, combo)
     if not State.CrowFarm then return combo end
+    if pauseFarmWhenUnfocused() then return combo end
 
     if State.collect or State.lootPhase or State.pendingLoot then
         releaseAimLock()
@@ -1373,6 +1373,8 @@ local function crowFarmStep(now, combo)
 
     if State.CrowPhase == "menu" then
         if now < (State.CrowMenuAt or 0) then return combo end
+        if now < (State.CrowMenuScanAt or 0) then return combo end
+        State.CrowMenuScanAt = now + 0.35
         local button, bossName = findCrowMenuChoice()
         if button and bossName and bossName ~= "Mother Bear" then
             uiClick(button)
@@ -1493,7 +1495,7 @@ local function crowFarmStep(now, combo)
         autoSkillStep(now, bestDistance, target.Model)
         if now >= (State.atkNext or 0) and not targetBlocking(target.Model)
             and bestDistance <= (State.SwingReach or 20) then
-            State.atkNext = now + (State.FastAttack and 0.12 or 0.3)
+            State.atkNext = now + 0.3
             combo = sendCombatAttack(char, getEquippedStyle(), combo)
             clickAttackInput()
         end
@@ -1506,6 +1508,37 @@ local function isRbxFocused()
     local ok, v = pcall(isrbxactive)
     if not ok then return true end
     return v == true
+end
+
+pauseFarmWhenUnfocused = function()
+    local focused = gameHasFocus()
+    local now = os.clock()
+    if not focused then
+        if State.wasGameFocused ~= false then
+            State.wasGameFocused = false
+            releaseAimLock()
+            releaseAutoSkills()
+            pcall(function() if mouse1release then mouse1release() end end)
+            pcall(function() if mouse2release then mouse2release() end end)
+            pcall(function()
+                local char = lp.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp then hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end
+            end)
+        end
+        return true, false
+    end
+
+    if State.wasGameFocused == false then
+        State.wasGameFocused = true
+        State.atkNext = 0
+        State.lastBossAttack = now
+        State.bossRecoveryAt = 0
+        farmLastAct = now
+        return false, true
+    end
+    State.wasGameFocused = true
+    return false, false
 end
 
 local function lootItemPos(it)
@@ -1733,6 +1766,7 @@ local function collectLoot(killPos)
     collectStop()
 end
 
+--[[ Removed feature: Auto-Fish implementation.
 local FishBar = { active = false, lmb = false, prevY = nil, lastCheck = 0 }
 
 local function fishMouse(pressed)
@@ -2020,6 +2054,7 @@ local function fishSync()
         FishBar.active = false
     end
 end
+]]
 
 local function currentBossName()
     local order = State.BossOrder
@@ -2936,7 +2971,7 @@ task.spawn(function()
         end
       end)
       if not okEsp then task.wait(2.0) end
-        task.wait(0.35)
+        task.wait(0.8)
     end
 end)
 
@@ -2945,6 +2980,7 @@ local function doRender()
     if not State.Running then
         clearAllESP()
         if espConn then espConn:Disconnect() end
+        State.drawConn = nil
         return
     end
     local list = espTargets
@@ -3003,6 +3039,7 @@ espConn = RunService.RenderStepped:Connect(function()
         warn("[ESP] render error: " .. tostring(err))
     end
 end)
+State.drawConn = espConn
 
 local FarmMobsTab = win:Tab("AutoFarm", "sword")
 local FarmBossTab = win:Tab("Boss Farm & Defense", "skull")
@@ -3011,7 +3048,6 @@ local SkillsTab = win:Tab("Auto Skills", "lightning-bolt")
 local TeleportTab = win:Tab("Teleports", "map")
 local ChestTab = win:Tab("Chests & Loot", "gift-box")
 local ESPTab = win:Tab("ESP & Visuals", "eye")
-local TrainTab = win:Tab("Training", "speedometer")
 local MiscTab = win:Tab("Settings", "gear")
 
 local FarmMobsSec = FarmMobsTab:Section("Quest Cycle", "Full")
@@ -3021,8 +3057,8 @@ local QuestSec = QuestTab:Section("Mob Farm", "Full")
 local TeleportSec = TeleportTab:Section("Travel", "Full")
 local ChestSec = ChestTab:Section("Loot", "Full")
 local ESPSec = ESPTab:Section("Visuals", "Full")
-local TrainSec = TrainTab:Section("Training", "Full")
 local MiscSec = MiscTab:Section("General", "Full")
+local ConfigSec = MiscTab:Section("Config Profiles", "Full")
 
 local hAutoFarmMobs, hAutoFarmBoss
 local hFullAutoFarm = FarmMobsSec:Toggle("Full AutoFarm (Quest Cycle)", false, function(val)
@@ -3075,7 +3111,7 @@ FarmMobsSec:Dropdown("Crow Hunt Sword Slot", {"1"}, {"1", "2", "3", "4", "5"}, f
     State.CrowSwordSlot = tonumber(type(val) == "table" and val[1] or val) or 1
 end)
 
-FarmMobsSec:Toggle("Crow Farm", false, function(val)
+local hCrowFarm = FarmMobsSec:Toggle("Crow Farm", false, function(val)
     State.CrowFarm = val
     State.CrowPhase = "idle"
     State.CrowTarget = nil
@@ -3203,10 +3239,6 @@ FarmBossSec:Slider("Aim Lock Gain", 0.55, 0.05, 0.1, 1, "", function(val)
     State.AimGain = tonumber(val) or 0.55
 end)
 
-FarmBossSec:Toggle("Ultra Fast Attack / Stun-Lock", false, function(val)
-    State.FastAttack = val
-end)
-
 FarmBossSec:Toggle("Hold When Blocking", true, function(val)
     State.SkipBlocking = val
 end)
@@ -3227,29 +3259,6 @@ FarmBossSec:Toggle("Auto Loot Boss Drops", true, function(val)
     if not val then
         State.pendingLoot = nil
     end
-end)
-
-FarmBossSec:Toggle("Combat Reach Assist (Server Hit Sync)", false, function(val)
-    State.ReachAssist = val
-    if val then
-        UI:Notify({ Title = "Reach Assist", Content = "Active (Syncs hits to register server damage)", Type = "success", Duration = 2 })
-    else
-        UI:Notify({ Title = "Reach Assist", Content = "Disabled", Type = "warn", Duration = 2 })
-    end
-end)
-
-FarmBossSec:Toggle("Universal Auto-Parry / Guard (Key F)", false, function(val)
-    State.AutoParry = val
-    if not val and keyrelease then
-        pcall(function()
-            keyrelease(102)
-            keyrelease(70)
-        end)
-    end
-end)
-
-FarmBossSec:Toggle("Emergency Health Safeguard", false, function(val)
-    State.HealthSafeguard = val
 end)
 
 FarmSkillsSec:Slider("Skill Gap", 0.3, 0.05, 0.05, 3, "s", function(val)
@@ -3342,29 +3351,6 @@ end)
 
 QuestSec:Slider("Mob Offset", 3.8, 0.1, 1.5, 15, "", function(val)
     State.MobHeightOffset = val
-end)
-
-QuestSec:Toggle("Ultra Fast Attack / Stun-Lock", false, function(val)
-    State.FastAttack = val
-end)
-
-QuestSec:Toggle("Combat Reach Assist (Server Hit Sync)", false, function(val)
-    State.ReachAssist = val
-    if val then
-        UI:Notify({ Title = "Reach Assist", Content = "Active (Syncs hits to register server damage)", Type = "success", Duration = 2 })
-    else
-        UI:Notify({ Title = "Reach Assist", Content = "Disabled", Type = "warn", Duration = 2 })
-    end
-end)
-
-QuestSec:Toggle("Universal Auto-Parry / Guard (Key F)", false, function(val)
-    State.AutoParry = val
-    if not val and keyrelease then
-        pcall(function()
-            keyrelease(102)
-            keyrelease(70)
-        end)
-    end
 end)
 
 QuestSec:Button("Scan Mobs on Server", function()
@@ -3672,52 +3658,6 @@ ESPSec:Slider("ESP Max Distance", 1200, 50, 100, 3000, "m", function(val)
     State.ESPDistance = val
 end)
 
-local WorkoutNames = {}
-for k, _ in pairs(WorkoutTeleports) do table.insert(WorkoutNames, k) end
-table.sort(WorkoutNames)
-
-local SelectedWorkout = WorkoutNames[1]
-TrainSec:Dropdown("Workout Station", {SelectedWorkout}, WorkoutNames, false, function(val)
-    SelectedWorkout = type(val) == "table" and val[1] or val
-end)
-
-TrainSec:Button("Go to Workout", function()
-    local pos = WorkoutTeleports[SelectedWorkout]
-    smartTeleportToEntity(SelectedWorkout, pos)
-end)
-
-local hAutoTrain = TrainSec:Toggle("Auto-Train (Auto-Press T & Complete)", false, function(val)
-    State.AutoCompleteTraining = val
-    if val then
-        UI:Notify({ Title = "Auto-Training", Content = "Active (Pressing T & Completing)", Type = "success", Duration = 3 })
-    else
-        if keyrelease then
-            pcall(function()
-                keyrelease(84)
-            end)
-        end
-        UI:Notify({ Title = "Auto-Training", Content = "Paused", Type = "warn", Duration = 2 })
-    end
-end)
-
-TrainSec:Toggle("Auto-Fish", false, function(val)
-    State.AutoFish = val
-    fishSync()
-    if val then
-        UI:Notify({ Title = "Auto-Fish", Content = "Active - cast once to save the fishing spot", Type = "success", Duration = 3 })
-    else
-        UI:Notify({ Title = "Auto-Fish", Content = "Disabled", Type = "warn", Duration = 2 })
-    end
-end)
-
-TrainSec:Slider("Fish Lead", 0.12, 0.01, 0, 0.4, "s", function(val)
-    State.FishLead = val
-end)
-
-TrainSec:Slider("Fish Timeout", 30, 1, 10, 60, "s", function(val)
-    State.FishTimeout = val
-end)
-
 MiscSec:Toggle("Anti-AFK", false, function(val)
     State.AntiAFK = val
 end)
@@ -3725,6 +3665,201 @@ end)
 MiscSec:Toggle("NoClip", false, function(val)
     State.NoClip = val
 end)
+
+local configNameInput = "default"
+local selectedConfigName = nil
+local ConfigNameWidget = nil
+local savedConfigDropdown = nil
+local configFolderPath = "Slayers2/configs"
+local ConfigStateKeys = {
+    "AutoFarmMobs", "SelectedMob", "MobDefenseMode", "MobHeightOffset", "MobBehindDistance",
+    "MobAttackDelay", "AutoFarmBoss",
+    "SelectedBoss", "BossOrder", "bossIdx", "activeBoss", "DefenseMode", "BossHeightOffset",
+    "SkipBlocking", "SmoothMove", "MoveSpeed", "WarpAbove", "SwingReach", "AutoLoot",
+    "LootWait", "HoldT", "AimLock", "AimGain",
+    "AutoQuestTasks", "SelectedQuest", "QuestOrder", "questIdx", "QuestReturnAfter",
+    "QuestWait", "QuestWaitTime", "SkillGap", "SkillConfig", "NoClip",
+    "AutoChest", "ESPMobs", "ESPBosses", "ESPPlants", "ESPChests", "ESPCrystals",
+    "ESPSpiderLily", "ESPHorses", "ESPLevers", "ESPMuzan", "ESPFruits", "ESPDistance",
+    "FullAutoFarm", "QuestPickMode", "SpamZX", "CrowFarm", "CrowSlot", "CrowSwordSlot"
+}
+local ConfigStateKeySet = {}
+for _, key in ipairs(ConfigStateKeys) do ConfigStateKeySet[key] = true end
+
+local function sanitizeConfigName(value)
+    local name = tostring(value or "default"):gsub("[^%w_%-]", "_")
+    if name == "" then name = "default" end
+    return name
+end
+
+local function safeConfigName()
+    return sanitizeConfigName(configNameInput)
+end
+
+local function configPath(name)
+    return configFolderPath .. "/" .. sanitizeConfigName(name or configNameInput) .. ".json"
+end
+
+local function listSavedConfigs()
+    local names = {}
+    local ok, files = pcall(listfiles, configFolderPath)
+    if not ok or type(files) ~= "table" then return names end
+    for _, file in ipairs(files) do
+        local normalized = tostring(file):gsub("\\", "/")
+        local name = normalized:match("([^/]+)%.json$")
+        if name and name ~= "last" then
+            names[#names + 1] = name
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+local function refreshSavedConfigList()
+    if savedConfigDropdown then
+        pcall(function() savedConfigDropdown:Refresh(listSavedConfigs()) end)
+    end
+end
+
+local function copySerializable(value)
+    if type(value) ~= "table" then return value end
+    local result = {}
+    for key, child in pairs(value) do
+        if type(child) ~= "function" and type(child) ~= "userdata" and type(child) ~= "thread" then
+            result[key] = copySerializable(child)
+        end
+    end
+    return result
+end
+
+local function saveNamedConfig()
+    local ok, err = pcall(function()
+        if not isfolder("Slayers2") then makefolder("Slayers2") end
+        if not isfolder(configFolderPath) then makefolder(configFolderPath) end
+        local settings = {}
+        for _, key in ipairs(ConfigStateKeys) do
+            settings[key] = copySerializable(State[key])
+        end
+        local payload = {
+            version = 1,
+            ui = Lib:ExportConfig(),
+            state = settings,
+            selected = {
+                zone = SelectedZone,
+                bossTeleport = SelectedBossTeleport,
+                trainer = SelectedTrainer
+            }
+        }
+        local json = game:GetService("HttpService"):JSONEncode(payload)
+        local name = safeConfigName()
+        writefile(configPath(name), json)
+        selectedConfigName = name
+        writefile(configFolderPath .. "/last.json", game:GetService("HttpService"):JSONEncode({ name = name }))
+    end)
+    if ok then
+        refreshSavedConfigList()
+        selectedConfigName = safeConfigName()
+        pcall(function() ConfigNameWidget:Set(selectedConfigName) end)
+        pcall(function() savedConfigDropdown:Set({ selectedConfigName }) end)
+        UI:Notify({ Title = "Config", Content = "Saved " .. safeConfigName() .. ".json", Type = "success", Duration = 3 })
+    else
+        UI:Notify({ Title = "Config", Content = "Save failed: " .. tostring(err), Type = "warn", Duration = 5 })
+    end
+end
+
+local function loadNamedConfig(name)
+    local profileName = sanitizeConfigName(name or selectedConfigName or configNameInput)
+    local path = configPath(profileName)
+    if not isfile(path) then
+        UI:Notify({ Title = "Config", Content = "Not found: " .. profileName .. ".json", Type = "warn", Duration = 4 })
+        return
+    end
+    local ok, err = pcall(function()
+        local payload = game:GetService("HttpService"):JSONDecode(readfile(path))
+        if type(payload) ~= "table" then error("Invalid config file") end
+
+        if payload.ui then
+            pcall(function() Lib:ImportConfig(payload.ui) end)
+        end
+        for key, value in pairs(payload.state or {}) do
+            if ConfigStateKeySet[key] then
+                if key == "SkillConfig" and type(value) == "table" then
+                    for skillName, savedSkill in pairs(value) do
+                        local liveSkill = State.SkillConfig[skillName]
+                        if liveSkill and type(savedSkill) == "table" then
+                            for skillKey, skillValue in pairs(savedSkill) do
+                                liveSkill[skillKey] = skillValue
+                            end
+                        end
+                    end
+                else
+                    State[key] = copySerializable(value)
+                end
+            end
+        end
+        local selected = payload.selected or {}
+        if selected.zone and TeleportZones[selected.zone] then SelectedZone = selected.zone end
+        if selected.bossTeleport and BossTeleports[selected.bossTeleport] then SelectedBossTeleport = selected.bossTeleport end
+        if selected.trainer and TrainerTeleports[selected.trainer] then SelectedTrainer = selected.trainer end
+        selectedConfigName = profileName
+        configNameInput = profileName
+
+        -- Reapply mode toggles after the values load, letting their existing
+        -- UI callbacks restore the automation state consistently.
+        pcall(function() hFullAutoFarm:Set(false) end)
+        pcall(function() hAutoFarmMobs:Set(false) end)
+        pcall(function() hAutoFarmBoss:Set(false) end)
+        pcall(function() hCrowFarm:Set(false) end)
+        if State.CrowFarm then
+            hCrowFarm:Set(true)
+        elseif State.FullAutoFarm then
+            hFullAutoFarm:Set(true)
+        elseif State.AutoFarmBoss then
+            hAutoFarmBoss:Set(true)
+        elseif State.AutoFarmMobs then
+            hAutoFarmMobs:Set(true)
+        end
+    end)
+    if ok then
+        pcall(function() ConfigNameWidget:Set(profileName) end)
+        pcall(function() savedConfigDropdown:Set({ profileName }) end)
+        UI:Notify({ Title = "Config", Content = "Loaded " .. profileName .. ".json", Type = "success", Duration = 3 })
+    else
+        UI:Notify({ Title = "Config", Content = "Load failed: " .. tostring(err), Type = "warn", Duration = 5 })
+    end
+end
+
+local ConfigNameWidgetRef = ConfigSec:Textbox("New Config Name", "default", function(value)
+    configNameInput = value
+end)
+ConfigNameWidget = ConfigNameWidgetRef
+savedConfigDropdown = ConfigSec:Dropdown("Saved Configs", {}, function()
+    return listSavedConfigs()
+end, false, function(value)
+    selectedConfigName = type(value) == "table" and value[1] or value
+end, nil, true)
+ConfigSec:Button("Save JSON Config", saveNamedConfig)
+ConfigSec:Button("Load Selected Config", function()
+    if not selectedConfigName or selectedConfigName == "" then
+        UI:Notify({ Title = "Config", Content = "Choose a saved profile first", Type = "warn", Duration = 3 })
+        return
+    end
+    loadNamedConfig(selectedConfigName)
+end)
+ConfigSec:Button("Refresh Config List", refreshSavedConfigList)
+
+local function loadLastConfig()
+    pcall(function()
+        local lastPath = configFolderPath .. "/last.json"
+        if not isfile(lastPath) then return end
+        local payload = game:GetService("HttpService"):JSONDecode(readfile(lastPath))
+        local name = payload and payload.name
+        if type(name) == "string" and name ~= "" and isfile(configPath(name)) then
+            refreshSavedConfigList()
+            loadNamedConfig(name)
+        end
+    end)
+end
 
 local HideVKMap = {
     f1 = 112, f2 = 113, f3 = 114, f4 = 115, f5 = 116, f6 = 117,
@@ -3775,11 +3910,12 @@ MiscSec:Keybind("Panic Stop", "f2", function(val)
     end
 end)
 
-local farmLastAct = os.clock()
+farmLastAct = os.clock()
 local need = 0
 local curQuestId = nil
 
 local function farmWatchdog()
+    if pauseFarmWhenUnfocused() then return end
     local anyFarm = State.AutoFarmMobs or State.AutoFarmBoss or State.AutoQuestTasks
     if not anyFarm then
         farmLastAct = os.clock()
@@ -3875,6 +4011,7 @@ local function farmWatchdog()
 end
 
 local function bossWatchdog()
+    if pauseFarmWhenUnfocused() then return end
     if not State.AutoFarmBoss or not State.activeBoss then return end
     if State.pendingLoot or State.lootPhase or State.collect then return end
 
@@ -3984,6 +4121,7 @@ end
 local fafWasFarming = false
 local fafLastStep = 0
 local function fafStep()
+    if pauseFarmWhenUnfocused() then return end
     if not State.FullAutoFarm then
         fafWasFarming = false
         return
@@ -4080,13 +4218,11 @@ panicStop = function()
     pcall(function() hAutoFarmMobs:Set(false) end)
     pcall(function() hAutoFarmBoss:Set(false) end)
     State.AutoQuestTasks = false
-    State.AutoFish = false
-    fishSync()
-    pcall(function() hAutoTrain:Set(false) end)
     pcall(function() hAutoChest:Set(false) end)
-    State.AutoSpamSkills = false
     State.SpamZX = false
     State.atkNext = 0
+    releaseAimLock()
+    releaseAutoSkills()
     State.pendingLoot = nil
     State.lootPhase = nil
     if keyrelease then
@@ -4139,9 +4275,11 @@ task.spawn(function()
     end
 end)
 
+--[[ Removed feature: Combat Reach Assist.
 task.spawn(function()
     while State.Running do
       local okStep = pcall(function()
+        if pauseFarmWhenUnfocused() then return end
         if State.ReachAssist and not State.AutoFarmMobs and not State.AutoFarmBoss then
             local char = lp.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -4208,6 +4346,7 @@ end)
 task.spawn(function()
     while State.Running do
       local okStep = pcall(function()
+        if pauseFarmWhenUnfocused() then return end
         if State.AutoChest then
             local active = getActiveChests()
             if #active > 0 then
@@ -4226,10 +4365,12 @@ task.spawn(function()
         task.wait(1.5)
     end
 end)
+]]
 
 task.spawn(function()
     while State.Running do
       local okStep = pcall(function()
+        if pauseFarmWhenUnfocused() then return end
         local char = lp.Character
         if char then
             if State.NoClip then
@@ -4249,6 +4390,8 @@ end)
 task.spawn(function()
     while State.Running do
       local okStep = pcall(function()
+        if pauseFarmWhenUnfocused() then return end
+        --[[ Removed feature: Universal Auto-Parry.
         if State.AutoParry and not State.collect and not State.lootPhase and not State.pendingLoot then
             local char = lp.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -4316,6 +4459,7 @@ task.spawn(function()
                 end
             end
         end
+        ]]
       end)
       if not okStep then task.wait(0.5) end
         task.wait(0.08)
@@ -4371,6 +4515,9 @@ task.spawn(function()
                 if target and target.Humanoid and (target.Humanoid.Health or 0) > 0 then
                     local style = getEquippedStyle()
                     while State.Running and State.AutoFarmMobs and target.Humanoid and (target.Humanoid.Health or 0) > 0 do
+                        local pauseForFocus, focusReturned = pauseFarmWhenUnfocused()
+                        if pauseForFocus then task.wait(0.1); continue end
+                        if focusReturned then break end
                         if not hum or (hum.Health or 0) <= 0 or not char.Parent then
                             break
                         end
@@ -4402,13 +4549,12 @@ task.spawn(function()
                         local currentDist = (tPos - hrp.Position).Magnitude
                         autoSkillStep(now, currentDist, target.Model)
                         if now >= (State.atkNext or 0) then
-                            State.atkNext = now + (State.FastAttack and 0.12 or (State.MobAttackDelay > 0 and State.MobAttackDelay or 0.3))
+                            State.atkNext = now + (State.MobAttackDelay > 0 and State.MobAttackDelay or 0.3)
                             if not targetBlocking(target.Model) then
                                 local dist2 = 0
                                 pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
-                                    clickAttackInput()
                                 end
                             end
                         end
@@ -4501,14 +4647,6 @@ task.spawn(function()
                     task.wait(2.0)
                     return
                 end
-                if State.HealthSafeguard and hum.Health < hum.MaxHealth * 0.6 then
-                    hrp.CFrame = hrp.CFrame + Vector3.new(0, 50, 0)
-                    hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                    while State.Running and State.AutoFarmBoss and hum.Health < hum.MaxHealth * 0.95 do
-                        task.wait(0.5)
-                    end
-                end
-                
                 local targets = getTargets(bossName)
                 local target = nil
                 local bestDist = math.huge
@@ -4532,6 +4670,9 @@ task.spawn(function()
                     UI:Notify({ Title = "Boss Farm", Content = "Attacking: " .. tostring(bossName), Type = "info", Duration = 2 })
                     
                     while State.Running and State.AutoFarmBoss and target.Humanoid and (target.Humanoid.Health or 0) > 0 do
+                        local pauseForFocus, focusReturned = pauseFarmWhenUnfocused()
+                        if pauseForFocus then task.wait(0.1); continue end
+                        if focusReturned then break end
                         if not hum or (hum.Health or 0) <= 0 or not char.Parent then
                             releaseAutoSkills()
                             break
@@ -4545,15 +4686,6 @@ task.spawn(function()
                             releaseAutoSkills()
                             task.wait(0.05)
                             continue
-                        end
-                        
-                        if State.HealthSafeguard and hum.Health < hum.MaxHealth * 0.6 then
-                            hrp.CFrame = hrp.CFrame + Vector3.new(0, 50, 0)
-                            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                            while State.Running and State.AutoFarmBoss and hum.Health < hum.MaxHealth * 0.95 do
-                                task.wait(0.5)
-                            end
-                            break
                         end
                         
                         farmLastAct = os.clock()
@@ -4574,14 +4706,13 @@ task.spawn(function()
                         local currentDist = (bPos - hrp.Position).Magnitude
                         autoSkillStep(now, currentDist, target.Model)
                         if now >= (State.atkNext or 0) then
-                            State.atkNext = now + (State.FastAttack and 0.12 or 0.3)
+                            State.atkNext = now + 0.3
                             if not targetBlocking(target.Model) then
                                 local dist2 = 0
                                 pcall(function() dist2 = (bPos - hrp.Position).Magnitude end)
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
                                     State.lastBossAttack = os.clock()
-                                    clickAttackInput()
                                 end
                             end
                         end
@@ -4658,6 +4789,10 @@ end)
 -- Boss loot follows bossfarmgood: loot has priority over returning to spawn.
 task.spawn(function()
     while State.Running do
+        if pauseFarmWhenUnfocused() then
+            task.wait(0.1)
+            continue
+        end
         if (State.AutoFarmBoss or State.CrowFarm) and State.AutoLoot then
             local now = os.clock()
             if State.collect then
@@ -4851,6 +4986,9 @@ task.spawn(function()
                             local style = getEquippedStyle()
                             local mobLastPos = target.Root.Position
                             while State.Running and State.AutoQuestTasks and target.Humanoid and (target.Humanoid.Health or 0) > 0 do
+                                local pauseForFocus, focusReturned = pauseFarmWhenUnfocused()
+                                if pauseForFocus then task.wait(0.1); continue end
+                                if focusReturned then break end
                                 if not hum or (hum.Health or 0) <= 0 or not char.Parent then
                                     break
                                 end
@@ -4886,13 +5024,12 @@ task.spawn(function()
                                 local currentDist = (tPos - hrp.Position).Magnitude
                                 autoSkillStep(now, currentDist, target.Model)
                                 if now >= (State.atkNext or 0) then
-                                    State.atkNext = now + (State.FastAttack and 0.12 or 0.3)
+                                    State.atkNext = now + 0.3
                                     if not targetBlocking(target.Model) then
                                         local dist2 = 0
                                         pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                         if dist2 <= (State.SwingReach or 20) then
                                             combo = sendCombatAttack(char, style, combo)
-                                            clickAttackInput()
                                         end
                                     end
                                 end
@@ -4943,9 +5080,11 @@ task.spawn(function()
     end
 end)
 
+--[[ Removed feature: Auto-Training / Auto-Boulder worker.
 task.spawn(function()
     while State.Running do
       local okStep = pcall(function()
+        if pauseFarmWhenUnfocused() then return end
         if State.AutoCompleteTraining then
             local char = lp.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -5036,9 +5175,9 @@ task.spawn(function()
       if not okStep then task.wait(1.0) end
     end
 end)
+]]
 
 task.spawn(function()
-    local skillKeys = { 49, 50, 51, 52, 53, 54 }
     while State.Running do
         if State.SpamZX and (State.AutoFarmMobs or State.AutoFarmBoss or State.AutoQuestTasks)
             and not State.collect and not State.lootPhase and not State.pendingLoot then
@@ -5058,17 +5197,6 @@ task.spawn(function()
                 task.wait(0.06)
             end
             task.wait(0.15)
-        elseif State.AutoSpamSkills and not State.collect and not State.lootPhase and not State.pendingLoot then
-            for _, k in ipairs(skillKeys) do
-                if not State.Running or not State.AutoSpamSkills then break end
-                if keypress and keyrelease then
-                    keypress(k)
-                    task.wait(0.05)
-                    keyrelease(k)
-                end
-                task.wait(0.2)
-            end
-            task.wait(State.SkillSpamInterval)
         else
             task.wait(0.5)
         end
@@ -5091,6 +5219,11 @@ task.spawn(function()
         end
     end
 end)
+
+pcall(function()
+    Lib:SetAutoSave(true)
+end)
+loadLastConfig()
 
 UI:Notify({
     Title = "Slayers 2 Hub",
