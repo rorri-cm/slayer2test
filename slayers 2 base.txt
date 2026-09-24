@@ -34,6 +34,7 @@ local State = {
     AutoFarmBoss = false,
     CrowFarm = false,
     CrowSlot = 2,
+    CrowSwordSlot = 1,
     CrowPhase = "idle",
     CrowTarget = nil,
     CrowNextAt = 0,
@@ -42,6 +43,8 @@ local State = {
     CrowPreviousQuestId = nil,
     CrowSawBoss = false,
     CrowLastAliveAt = 0,
+    CrowLastPosition = nil,
+    CrowNeedsSword = false,
     SelectedBoss = "Akazo",
     BossOrder = { "Akazo" },
     bossIdx = 1,
@@ -78,6 +81,9 @@ local State = {
     AutoParry = false,
     HealthSafeguard = false,
     BossAttackDelay = 0,
+    AimLock = false,
+    AimGain = 0.55,
+    aimRmbDown = false,
     AutoQuestTasks = false,
     SelectedQuest = "[Windy Peak] Krue: 3 Bandits",
     QuestReturnAfter = false,
@@ -120,6 +126,7 @@ _G.Slayers2Hub = State
 
 local function resetCombatInputAfterRespawn()
     pcall(function() if mouse1release then mouse1release() end end)
+    pcall(function() if mouse2release then mouse2release() end end)
     if keyrelease then
         for _, key in ipairs({ 70, 84, 90, 88, 67, 86, 66, 78, 75 }) do
             pcall(function() keyrelease(key) end)
@@ -128,6 +135,7 @@ local function resetCombatInputAfterRespawn()
     State.atkNext = 0
     State.lastBossAttack = 0
     State.bossRecoveryAt = 0
+    State.aimRmbDown = false
     for _, cfg in pairs(State.SkillConfig or {}) do
         cfg.ReleaseAt = 0
         cfg.NextAt = 0
@@ -173,9 +181,16 @@ local win = Lib:CreateWindow({
     size = Vector2.new(760, 560),
     menuKey = "none",
     keybindOverlay = true,
+    configName = "slayers2_base",
+    configFolder = "Slayers2",
+    autoSave = true,
     accentA = Color3.fromRGB(122, 134, 255),
     accentB = Color3.fromRGB(189, 130, 255)
 })
+pcall(function()
+    Lib:SetAutoSave(true)
+    Lib:SetAutoLoad("slayers2_base")
+end)
 
 local UI = { Alive = true }
 function UI:Notify(cfg)
@@ -1061,6 +1076,10 @@ local function releaseAutoSkills()
 end
 
 local function autoSkillStep(now, distance, targetModel)
+    if State.collect or State.lootPhase or State.pendingLoot then
+        releaseAutoSkills()
+        return
+    end
     for _, cfg in pairs(State.SkillConfig or {}) do
         if cfg.ReleaseAt and cfg.ReleaseAt > 0 and now >= cfg.ReleaseAt then
             pcall(function() keyrelease(cfg.Key) end)
@@ -1102,6 +1121,63 @@ local function clickAttackInput()
         end
     end
     if mouse1click then pcall(mouse1click) end
+end
+
+local function releaseAimLock()
+    if State.aimRmbDown then
+        pcall(function() if mouse2release then mouse2release() end end)
+    end
+    State.aimRmbDown = false
+end
+
+local function aimLockStep(targetModel, targetRoot)
+    if not State.AimLock or State.collect or State.lootPhase or State.pendingLoot then
+        releaseAimLock()
+        return
+    end
+    if win and win.IsOpen then
+        local ok, isOpen = pcall(function() return win:IsOpen() end)
+        if ok and isOpen then releaseAimLock(); return end
+    end
+    if isrbxactive then
+        local ok, active = pcall(isrbxactive)
+        if ok and not active then releaseAimLock(); return end
+    end
+
+    local camera = Workspace.CurrentCamera
+    if not camera then releaseAimLock(); return end
+    local targetPart = targetModel and targetModel:FindFirstChild("Head") or targetRoot
+    if not targetPart then releaseAimLock(); return end
+
+    local ok, cameraCFrame, targetPos = pcall(function()
+        return camera.CFrame, targetPart.Position
+    end)
+    if not ok or not cameraCFrame or not vec3Ok(targetPos) then releaseAimLock(); return end
+
+    local origin = cameraCFrame.Position
+    local look = cameraCFrame.LookVector
+    local offset = targetPos - origin
+    local horizontal = math.sqrt(offset.X * offset.X + offset.Z * offset.Z)
+    if horizontal < 0.01 then return end
+
+    local yawDelta = math.atan2(-offset.X, -offset.Z) - math.atan2(-look.X, -look.Z)
+    while yawDelta > math.pi do yawDelta = yawDelta - 2 * math.pi end
+    while yawDelta < -math.pi do yawDelta = yawDelta + 2 * math.pi end
+    local pitchDelta = math.atan2(offset.Y, horizontal) - math.asin(look.Y)
+    if math.abs(yawDelta) < 0.008 and math.abs(pitchDelta) < 0.008 then return end
+
+    if not State.aimRmbDown then
+        pcall(function() if mouse2press then mouse2press() end end)
+        State.aimRmbDown = true
+    end
+
+    local dx = (yawDelta / -0.001747) * (State.AimGain or 0.55)
+    local dy = (pitchDelta / -0.001345) * (State.AimGain or 0.55)
+    dx = math.clamp(dx, -900, 900)
+    dy = math.clamp(dy, -600, 600)
+    pcall(function()
+        if mousemoverel then mousemoverel(dx, dy) end
+    end)
 end
 
 local function stanceGoal(tRoot, tPos, mode, offset)
@@ -1269,6 +1345,21 @@ end
 local function crowFarmStep(now, combo)
     if not State.CrowFarm then return combo end
 
+    if State.collect or State.lootPhase or State.pendingLoot then
+        releaseAimLock()
+        releaseAutoSkills()
+        return combo
+    end
+
+    if State.CrowPhase == "loot" then
+        State.CrowTarget = nil
+        State.CrowQuestId = nil
+        State.CrowSawBoss = false
+        State.CrowPhase = "idle"
+        State.CrowNextAt = now + 1
+        return combo
+    end
+
     if State.CrowPhase == "idle" then
         if now < (State.CrowNextAt or 0) then return combo end
         local previousQuest = getActiveQuest()
@@ -1306,6 +1397,7 @@ local function crowFarmStep(now, combo)
             and (crowQuestMatches(activeQ, State.CrowTarget) or isNewQuest) then
             State.CrowQuestId = activeQ.Id
             State.CrowPhase = "fight"
+            State.CrowNeedsSword = true
             State.atkNext = 0
             UI:Notify({ Title = "Crow Farm", Content = "Quest detected: hunting " .. State.CrowTarget, Type = "success", Duration = 3 })
         elseif now >= (State.CrowQuestDeadline or 0) then
@@ -1319,21 +1411,41 @@ local function crowFarmStep(now, combo)
     if State.CrowPhase == "fight" then
         local activeQ = getActiveQuest()
         if activeQ and activeQ.Id == State.CrowQuestId and activeQ.Complete then
-            State.CrowTarget = nil
-            State.CrowQuestId = nil
-            State.CrowSawBoss = false
-            State.CrowPhase = "idle"
-            State.CrowNextAt = now + 1
-            State.atkNext = 0
+            State.CrowPhase = "loot"
+            local lootChar = lp.Character
+            local lootRoot = lootChar and lootChar:FindFirstChild("HumanoidRootPart")
+            State.pendingLoot = {
+                pos = State.CrowLastPosition or (lootRoot and lootRoot.Position),
+                t = now
+            }
             releaseAutoSkills()
-            UI:Notify({ Title = "Crow Farm", Content = "Boss quest complete; starting next crow cycle", Type = "success", Duration = 3 })
+            releaseAimLock()
+            UI:Notify({ Title = "Crow Farm", Content = "Quest complete; collecting drops before next crow", Type = "success", Duration = 3 })
             return combo
         end
 
         local char = lp.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hum or hum.Health <= 0 or not hrp then return combo end
+        if not hum or hum.Health <= 0 or not hrp then
+            State.CrowNeedsSword = true
+            releaseAimLock()
+            releaseAutoSkills()
+            return combo
+        end
+        if State.CrowNeedsSword then
+            local swordKey = 48 + math.clamp(tonumber(State.CrowSwordSlot) or 1, 1, 5)
+            pcall(function()
+                if setrobloxinput then setrobloxinput(true) end
+                if keyrelease then keyrelease(swordKey) end
+                keypress(swordKey)
+                task.wait(0.15)
+                keyrelease(swordKey)
+            end)
+            State.CrowNeedsSword = false
+            State.atkNext = 0
+            return combo
+        end
 
         local target = nil
         local bestDistance = math.huge
@@ -1349,12 +1461,11 @@ local function crowFarmStep(now, combo)
         end
 
         if not target then
+            releaseAimLock()
             if State.CrowSawBoss and now - (State.CrowLastAliveAt or now) > 6 then
-                State.CrowTarget = nil
-                State.CrowQuestId = nil
                 State.CrowSawBoss = false
-                State.CrowPhase = "idle"
-                State.CrowNextAt = now + 1
+                State.CrowPhase = "loot"
+                State.pendingLoot = { pos = State.CrowLastPosition or hrp.Position, t = now }
                 return combo
             end
             if now >= (State.CrowRecoveryAt or 0) then
@@ -1366,6 +1477,7 @@ local function crowFarmStep(now, combo)
 
         State.CrowSawBoss = true
         State.CrowLastAliveAt = now
+        State.CrowLastPosition = hrp.Position
         local targetPos = target.Root.Position
         if bestDistance > 80 then
             safeTeleport(targetPos + Vector3.new(0, 3, 0))
@@ -1373,6 +1485,7 @@ local function crowFarmStep(now, combo)
             return combo
         end
         applyStance(hrp, target.Root, targetPos, State.DefenseMode, State.BossHeightOffset or 3.8)
+        aimLockStep(target.Model, target.Root)
         pcall(function()
             char:SetAttribute("last_cmbat", 0)
             target.Model:SetAttribute("last_cmbat", 0)
@@ -1432,7 +1545,7 @@ local function lootNear(pos, range)
             if p and vec3Ok(p.Position) then
                 local dist = (p.Position - pos).Magnitude
                 if dist <= range then
-                    out[#out + 1] = { get = function() return p.Position end }
+                    out[#out + 1] = { get = function() return p.Position end, tap = true }
                 end
             end
         end
@@ -2937,6 +3050,9 @@ QuestWaitSlider:SetVisible(State.QuestWait)
 FarmMobsSec:Dropdown("Crow Inventory Slot", {"2"}, {"1", "2", "3", "4", "5"}, false, function(val)
     State.CrowSlot = tonumber(type(val) == "table" and val[1] or val) or 2
 end)
+FarmMobsSec:Dropdown("Crow Hunt Sword Slot", {"1"}, {"1", "2", "3", "4", "5"}, false, function(val)
+    State.CrowSwordSlot = tonumber(type(val) == "table" and val[1] or val) or 1
+end)
 
 FarmMobsSec:Toggle("Crow Farm", false, function(val)
     State.CrowFarm = val
@@ -3055,6 +3171,15 @@ end)
 
 FarmBossSec:Slider("Boss Offset (distance)", 3.8, 0.1, 1.5, 15, "", function(val)
     State.BossHeightOffset = val
+end)
+
+FarmBossSec:Toggle("Aim Lock (All Farms)", false, function(val)
+    State.AimLock = val
+    if not val then releaseAimLock() end
+end)
+
+FarmBossSec:Slider("Aim Lock Gain", 0.55, 0.05, 0.1, 1, "", function(val)
+    State.AimGain = tonumber(val) or 0.55
 end)
 
 FarmBossSec:Toggle("Ultra Fast Attack / Stun-Lock", false, function(val)
@@ -4103,7 +4228,7 @@ end)
 task.spawn(function()
     while State.Running do
       local okStep = pcall(function()
-        if State.AutoParry then
+        if State.AutoParry and not State.collect and not State.lootPhase and not State.pendingLoot then
             local char = lp.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -4180,6 +4305,12 @@ task.spawn(function()
     local combo = 1
     while State.Running do
       local okStep = pcall(function()
+        if State.collect or State.lootPhase or State.pendingLoot then
+            releaseAimLock()
+            releaseAutoSkills()
+            task.wait(0.05)
+            return
+        end
         if State.AutoFarmMobs then
             local char = lp.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -4226,6 +4357,12 @@ task.spawn(function()
                             panicStop()
                             break
                         end
+                        if State.collect or State.lootPhase or State.pendingLoot then
+                            releaseAimLock()
+                            releaseAutoSkills()
+                            task.wait(0.05)
+                            continue
+                        end
                         
                         farmLastAct = os.clock()
                         local tRoot = target.Root
@@ -4233,6 +4370,7 @@ task.spawn(function()
                         if not vec3Ok(tPos) then break end
 
                         applyStance(hrp, tRoot, tPos, State.MobDefenseMode, State.MobHeightOffset or 3.8)
+                        aimLockStep(target.Model, tRoot)
 
                         pcall(function()
                             char:SetAttribute("last_cmbat", 0)
@@ -4256,6 +4394,7 @@ task.spawn(function()
                         task.wait(0.08)
                     end
                 else
+                    releaseAimLock()
                     local respawned = false
                     for _ = 1, 4 do
                         task.wait(1.0)
@@ -4285,6 +4424,12 @@ task.spawn(function()
     local combo = 1
     while State.Running do
       local okStep = pcall(function()
+        if State.collect or State.lootPhase or State.pendingLoot then
+            releaseAimLock()
+            releaseAutoSkills()
+            task.wait(0.05)
+            return
+        end
         if State.AutoFarmBoss then
             local char = lp.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -4374,6 +4519,12 @@ task.spawn(function()
                             panicStop()
                             break
                         end
+                        if State.collect or State.lootPhase or State.pendingLoot then
+                            releaseAimLock()
+                            releaseAutoSkills()
+                            task.wait(0.05)
+                            continue
+                        end
                         
                         if State.HealthSafeguard and hum.Health < hum.MaxHealth * 0.6 then
                             hrp.CFrame = hrp.CFrame + Vector3.new(0, 50, 0)
@@ -4391,6 +4542,7 @@ task.spawn(function()
                         bossLastPos = hrp.Position
 
                         applyStance(hrp, bRoot, bPos, State.DefenseMode, State.BossHeightOffset or 3.8)
+                        aimLockStep(target.Model, bRoot)
 
                         pcall(function()
                             char:SetAttribute("last_cmbat", 0)
@@ -4436,6 +4588,7 @@ task.spawn(function()
                         releaseAutoSkills()
                     end
                 else
+                    releaseAimLock()
                     if State.pendingLoot or State.lootPhase or State.collect then
                         task.wait(0.1)
                     else
@@ -4484,7 +4637,7 @@ end)
 -- Boss loot follows bossfarmgood: loot has priority over returning to spawn.
 task.spawn(function()
     while State.Running do
-        if State.AutoFarmBoss and State.AutoLoot then
+        if (State.AutoFarmBoss or State.CrowFarm) and State.AutoLoot then
             local now = os.clock()
             if State.collect then
                 pcall(collectStep, now)
@@ -4501,9 +4654,13 @@ task.spawn(function()
                 elseif (now - phase.last) > (State.LootWait or 5) or (now - phase.t0) > 45 then
                     State.lootPhase = nil
                     State.pendingLoot = nil
-                    State.activeBoss = nil
-                    advanceBoss()
-                    UI:Notify({ Title = "Boss Loot", Content = "Drops done, returning to spawn", Type = "info", Duration = 2 })
+                    if not State.CrowFarm then
+                        State.activeBoss = nil
+                        advanceBoss()
+                        UI:Notify({ Title = "Boss Loot", Content = "Drops done, returning to spawn", Type = "info", Duration = 2 })
+                    else
+                        UI:Notify({ Title = "Crow Farm", Content = "Drops collected; continuing crow cycle", Type = "info", Duration = 2 })
+                    end
                 else
                     local char = lp.Character
                     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -4527,6 +4684,12 @@ task.spawn(function()
     local combo = 1
     while State.Running do
       local okStep = pcall(function()
+        if State.collect or State.lootPhase or State.pendingLoot then
+            releaseAimLock()
+            releaseAutoSkills()
+            task.wait(0.05)
+            return
+        end
         if State.AutoQuestTasks then
             local char = lp.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -4673,6 +4836,12 @@ task.spawn(function()
                                     panicStop()
                                     break
                                 end
+                                if State.collect or State.lootPhase or State.pendingLoot then
+                                    releaseAimLock()
+                                    releaseAutoSkills()
+                                    task.wait(0.05)
+                                    continue
+                                end
                                 
                                 local currentQ = getActiveQuest()
                                 if currentQ and currentQ.Complete then break end
@@ -4684,6 +4853,7 @@ task.spawn(function()
                                 mobLastPos = tPos
 
                                 applyStance(hrp, tRoot, tPos, State.MobDefenseMode, State.MobHeightOffset or 3.8)
+                                aimLockStep(target.Model, tRoot)
 
                                 pcall(function()
                                     char:SetAttribute("last_cmbat", 0)
@@ -4717,6 +4887,7 @@ task.spawn(function()
                                 pcall(collectLoot, mobLastPos)
                             end
                         else
+                            releaseAimLock()
                             local respawned = false
                             for _ = 1, 4 do
                                 task.wait(1.0)
@@ -4847,7 +5018,8 @@ end)
 task.spawn(function()
     local skillKeys = { 49, 50, 51, 52, 53, 54 }
     while State.Running do
-        if State.SpamZX and (State.AutoFarmMobs or State.AutoFarmBoss or State.AutoQuestTasks) then
+        if State.SpamZX and (State.AutoFarmMobs or State.AutoFarmBoss or State.AutoQuestTasks)
+            and not State.collect and not State.lootPhase and not State.pendingLoot then
             if iskeypressed and iskeypressed(PanicVK) then
                 if panicStop then panicStop() end
                 continue
@@ -4864,7 +5036,7 @@ task.spawn(function()
                 task.wait(0.06)
             end
             task.wait(0.15)
-        elseif State.AutoSpamSkills then
+        elseif State.AutoSpamSkills and not State.collect and not State.lootPhase and not State.pendingLoot then
             for _, k in ipairs(skillKeys) do
                 if not State.Running or not State.AutoSpamSkills then break end
                 if keypress and keyrelease then
