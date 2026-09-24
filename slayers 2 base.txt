@@ -32,6 +32,16 @@ local State = {
     FastAttackBurst = 10,
     ReachAssist = false,
     AutoFarmBoss = false,
+    CrowFarm = false,
+    CrowSlot = 2,
+    CrowPhase = "idle",
+    CrowTarget = nil,
+    CrowNextAt = 0,
+    CrowCombo = 1,
+    CrowQuestId = nil,
+    CrowPreviousQuestId = nil,
+    CrowSawBoss = false,
+    CrowLastAliveAt = 0,
     SelectedBoss = "Akazo",
     BossOrder = { "Akazo" },
     bossIdx = 1,
@@ -85,6 +95,8 @@ local State = {
     fish = nil,
     AutoSpamSkills = false,
     SkillSpamInterval = 2.0,
+    SkillGap = 0.3,
+    SkillConfig = {},
     NoClip = false,
     AutoChest = false,
     ESPMobs = false,
@@ -105,6 +117,44 @@ local State = {
     SpamZX = false
 }
 _G.Slayers2Hub = State
+
+local function resetCombatInputAfterRespawn()
+    pcall(function() if mouse1release then mouse1release() end end)
+    if keyrelease then
+        for _, key in ipairs({ 70, 84, 90, 88, 67, 86, 66, 78, 75 }) do
+            pcall(function() keyrelease(key) end)
+        end
+    end
+    State.atkNext = 0
+    State.lastBossAttack = 0
+    State.bossRecoveryAt = 0
+    for _, cfg in pairs(State.SkillConfig or {}) do
+        cfg.ReleaseAt = 0
+        cfg.NextAt = 0
+    end
+end
+
+local function bindCombatCharacter(character)
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    pcall(function()
+        local died = humanoid and humanoid.Died
+        if died and died.Connect then
+            died:Connect(resetCombatInputAfterRespawn)
+        end
+    end)
+end
+
+pcall(bindCombatCharacter, lp.Character)
+pcall(function()
+    local characterAdded = lp.CharacterAdded
+    if characterAdded and characterAdded.Connect then
+        characterAdded:Connect(function(character)
+            resetCombatInputAfterRespawn()
+            task.wait(0.25)
+            bindCombatCharacter(character)
+        end)
+    end
+end)
 
 local Lib
 local arcSuccess, arcResult = pcall(function()
@@ -211,6 +261,7 @@ local RegionSpawns = {
     ["Insect Trainee"] = Vector3.new(-1386.82, 264, 67.64),
     ["Flame Trainee"] = Vector3.new(-1135.99, 1031.55, 982.62),
     ["Rengu"] = Vector3.new(-692.92, 967.50, 824.45),
+    ["Yahari"] = Vector3.new(865.46, 1021.70, -615.72),
     ["Sound Trainee"] = Vector3.new(192.06, 1351.50, -2572.49),
     ["Stone Trainee"] = Vector3.new(2630.80, 1075.50, -515.61),
     ["Tai Chi Trainee"] = Vector3.new(2345.01, 605, -645.24),
@@ -521,7 +572,7 @@ local BossTeleports = {
     ["Gyorei"] = Vector3.new(2569.72, 1091.5, -730.2),
     ["Rengu"] = Vector3.new(-692.92, 967.50, 824.45),
     ["Nezura"] = Vector3.new(-1456.63, 278.45, 927.69),
-    ["Yahari"] = Vector3.new(809.68, 1021.01, -632.32),
+    ["Yahari"] = Vector3.new(865.46, 1021.70, -615.72),
     ["Sumari"] = Vector3.new(400.17, 1020.5, -596.86),
     ["Flame Trainee"] = Vector3.new(-1135.99, 1031.55, 982.62),
     ["Thunder Trainee"] = Vector3.new(2407.56, 1075.98, -573.41),
@@ -1000,6 +1051,59 @@ local function targetBlocking(model)
     return ok and b ~= nil
 end
 
+local function releaseAutoSkills()
+    for _, cfg in pairs(State.SkillConfig or {}) do
+        if cfg.ReleaseAt and cfg.ReleaseAt > 0 then
+            pcall(function() keyrelease(cfg.Key) end)
+            cfg.ReleaseAt = 0
+        end
+    end
+end
+
+local function autoSkillStep(now, distance, targetModel)
+    for _, cfg in pairs(State.SkillConfig or {}) do
+        if cfg.ReleaseAt and cfg.ReleaseAt > 0 and now >= cfg.ReleaseAt then
+            pcall(function() keyrelease(cfg.Key) end)
+            cfg.ReleaseAt = 0
+            cfg.NextAt = now + (State.SkillGap or 0.3)
+        end
+    end
+
+    if not distance then return end
+    local targetIsBlocking = nil
+    for _, cfg in pairs(State.SkillConfig or {}) do
+        if cfg.Enabled and distance <= (cfg.Distance or 15) and now >= (cfg.NextAt or 0) then
+            if cfg.BlockBreaker then
+                if targetIsBlocking == nil then
+                    targetIsBlocking = targetBlocking(targetModel)
+                end
+                if not targetIsBlocking then
+                    continue
+                end
+            end
+            pcall(function()
+                if setrobloxinput then setrobloxinput(true) end
+                keypress(cfg.Key)
+            end)
+            cfg.ReleaseAt = now + (cfg.Hold or 0.08)
+        end
+    end
+end
+
+local function clickAttackInput()
+    pcall(function() if mouse1release then mouse1release() end end)
+    pcall(function() if setrobloxinput then setrobloxinput(true) end end)
+    if mouse1press and mouse1release then
+        local pressed = pcall(mouse1press)
+        if pressed then
+            task.wait(0.035)
+            pcall(mouse1release)
+            return
+        end
+    end
+    if mouse1click then pcall(mouse1click) end
+end
+
 local function stanceGoal(tRoot, tPos, mode, offset)
     if mode == "On Top" or mode == "Head-Stomp (Directly on Top)" or mode == "Sky God-Hover (Directly Above)" then
         return tPos + Vector3.new(0, offset, 0)
@@ -1045,6 +1149,8 @@ local function applyStance(hrp, tRoot, tPos, mode, offset)
     end
 end
 
+local getEquippedStyle, getActiveQuest, getDialogueUI, collectChoices, uiClick
+
 local function sendCombatAttack(char, style, combo)
     if not RemoteEvent then return combo end
     local cur = 0
@@ -1057,6 +1163,229 @@ local function sendCombatAttack(char, style, combo)
         RemoteEvent:FireServer("Combat_Service", style, nxt, false, 0, false, nil)
     end)
     return nxt
+end
+
+local function bossNameFromCrowText(text)
+    local lower = tostring(text or ""):lower()
+    if lower == "" or not lower:find("defeat", 1, true)
+        or lower:find("mother bear", 1, true) then
+        return nil
+    end
+    for _, name in ipairs(BossMobsList) do
+        if name ~= "All Bosses" and name ~= "Mother Bear"
+            and lower:find(name:lower(), 1, true) then
+            return name
+        end
+    end
+    return nil
+end
+
+local function findCrowMenuChoice()
+    local actual = getDialogueUI()
+    if actual then
+        local choices = collectChoices(actual)
+        table.sort(choices, function(a, b)
+            return a.Button.AbsolutePosition.Y < b.Button.AbsolutePosition.Y
+        end)
+        for _, choice in ipairs(choices) do
+            local name = bossNameFromCrowText(choice.Text)
+            if name then return choice.Button, name end
+        end
+    end
+
+    local playerGui = lp:FindFirstChild("PlayerGui")
+    if not playerGui then return nil end
+    local matches = {}
+    for _, object in ipairs(playerGui:GetDescendants()) do
+        if object.ClassName == "TextButton" or object.ClassName == "TextLabel"
+            or object.ClassName == "ImageButton" then
+            local text = ""
+            pcall(function() text = object.Text end)
+            local name = bossNameFromCrowText(text)
+            if name then
+                local clickTarget = object
+                local parent = object.Parent
+                for _ = 1, 4 do
+                    if not parent then break end
+                    if parent.ClassName == "TextButton" or parent.ClassName == "ImageButton" then
+                        clickTarget = parent
+                        break
+                    end
+                    local width, height = 0, 0
+                    pcall(function()
+                        width = parent.AbsoluteSize.X
+                        height = parent.AbsoluteSize.Y
+                    end)
+                    if parent.ClassName == "Frame" and width >= 120 and height >= 45 then
+                        clickTarget = parent
+                    end
+                    parent = parent.Parent
+                end
+                local y = 0
+                pcall(function() y = object.AbsolutePosition.Y end)
+                matches[#matches + 1] = { Button = clickTarget, Name = name, Y = y }
+            end
+        end
+    end
+    table.sort(matches, function(a, b) return a.Y < b.Y end)
+    if matches[1] then
+        return matches[1].Button, matches[1].Name
+    end
+    return nil
+end
+
+local function crowQuestMatches(activeQ, bossName)
+    if not activeQ or not bossName then return false end
+    local fullText = tostring(activeQ.Name or ""):lower()
+    for _, taskInfo in ipairs(activeQ.Tasks or {}) do
+        fullText = fullText .. " " .. tostring(taskInfo.Name or ""):lower()
+        fullText = fullText .. " " .. tostring(taskInfo.Code or ""):lower()
+    end
+    return fullText:find(bossName:lower(), 1, true) ~= nil
+end
+
+local function crowPressUse()
+    local slotKey = 48 + math.clamp(tonumber(State.CrowSlot) or 2, 1, 5)
+    pcall(function()
+        if setrobloxinput then setrobloxinput(true) end
+        if keyrelease then keyrelease(slotKey) end
+        keypress(slotKey)
+        task.wait(0.2)
+        keyrelease(slotKey)
+    end)
+    task.wait(0.4)
+    pcall(function()
+        if setrobloxinput then setrobloxinput(true) end
+        if mouse1click then
+            mouse1click()
+        elseif mouse1press and mouse1release then
+            mouse1press()
+            task.wait(0.05)
+            mouse1release()
+        end
+    end)
+end
+
+local function crowFarmStep(now, combo)
+    if not State.CrowFarm then return combo end
+
+    if State.CrowPhase == "idle" then
+        if now < (State.CrowNextAt or 0) then return combo end
+        local previousQuest = getActiveQuest()
+        State.CrowPreviousQuestId = previousQuest and previousQuest.Id or nil
+        crowPressUse()
+        State.CrowPhase = "menu"
+        State.CrowMenuAt = now + 3.5
+        State.CrowMenuDeadline = now + 8
+        return combo
+    end
+
+    if State.CrowPhase == "menu" then
+        if now < (State.CrowMenuAt or 0) then return combo end
+        local button, bossName = findCrowMenuChoice()
+        if button and bossName and bossName ~= "Mother Bear" then
+            uiClick(button)
+            State.CrowTarget = bossName
+            State.CrowPhase = "quest"
+            State.CrowQuestDeadline = now + 15
+            State.CrowSawBoss = false
+            State.CrowLastAliveAt = 0
+            UI:Notify({ Title = "Crow Farm", Content = "Selected " .. bossName .. "; waiting for its quest", Type = "info", Duration = 3 })
+        elseif now >= (State.CrowMenuDeadline or 0) then
+            State.CrowPhase = "idle"
+            State.CrowNextAt = now + 2
+            UI:Notify({ Title = "Crow Farm", Content = "No eligible boss choice found; retrying", Type = "warn", Duration = 3 })
+        end
+        return combo
+    end
+
+    if State.CrowPhase == "quest" then
+        local activeQ = getActiveQuest()
+        local isNewQuest = activeQ and activeQ.Id ~= State.CrowPreviousQuestId
+        if activeQ and not activeQ.Complete
+            and (crowQuestMatches(activeQ, State.CrowTarget) or isNewQuest) then
+            State.CrowQuestId = activeQ.Id
+            State.CrowPhase = "fight"
+            State.atkNext = 0
+            UI:Notify({ Title = "Crow Farm", Content = "Quest detected: hunting " .. State.CrowTarget, Type = "success", Duration = 3 })
+        elseif now >= (State.CrowQuestDeadline or 0) then
+            State.CrowTarget = nil
+            State.CrowPhase = "idle"
+            State.CrowNextAt = now + 2
+        end
+        return combo
+    end
+
+    if State.CrowPhase == "fight" then
+        local activeQ = getActiveQuest()
+        if activeQ and activeQ.Id == State.CrowQuestId and activeQ.Complete then
+            State.CrowTarget = nil
+            State.CrowQuestId = nil
+            State.CrowSawBoss = false
+            State.CrowPhase = "idle"
+            State.CrowNextAt = now + 1
+            State.atkNext = 0
+            releaseAutoSkills()
+            UI:Notify({ Title = "Crow Farm", Content = "Boss quest complete; starting next crow cycle", Type = "success", Duration = 3 })
+            return combo
+        end
+
+        local char = lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hum or hum.Health <= 0 or not hrp then return combo end
+
+        local target = nil
+        local bestDistance = math.huge
+        for _, candidate in ipairs(getTargets(State.CrowTarget)) do
+            local exact = candidate.Name and candidate.Name:lower() == State.CrowTarget:lower()
+            if (exact or candidate.Boss) and candidate.Humanoid and candidate.Humanoid.Health > 0 then
+                local distance = (candidate.Root.Position - hrp.Position).Magnitude
+                if distance < bestDistance then
+                    bestDistance = distance
+                    target = candidate
+                end
+            end
+        end
+
+        if not target then
+            if State.CrowSawBoss and now - (State.CrowLastAliveAt or now) > 6 then
+                State.CrowTarget = nil
+                State.CrowQuestId = nil
+                State.CrowSawBoss = false
+                State.CrowPhase = "idle"
+                State.CrowNextAt = now + 1
+                return combo
+            end
+            if now >= (State.CrowRecoveryAt or 0) then
+                State.CrowRecoveryAt = now + 5
+                safeTeleport(getEntityLocation(State.CrowTarget))
+            end
+            return combo
+        end
+
+        State.CrowSawBoss = true
+        State.CrowLastAliveAt = now
+        local targetPos = target.Root.Position
+        if bestDistance > 80 then
+            safeTeleport(targetPos + Vector3.new(0, 3, 0))
+            State.atkNext = 0
+            return combo
+        end
+        applyStance(hrp, target.Root, targetPos, State.DefenseMode, State.BossHeightOffset or 3.8)
+        pcall(function()
+            char:SetAttribute("last_cmbat", 0)
+            target.Model:SetAttribute("last_cmbat", 0)
+        end)
+        autoSkillStep(now, bestDistance, target.Model)
+        if now >= (State.atkNext or 0) and not targetBlocking(target.Model)
+            and bestDistance <= (State.SwingReach or 20) then
+            State.atkNext = now + (State.FastAttack and 0.12 or 0.3)
+            combo = sendCombatAttack(char, getEquippedStyle(), combo)
+            clickAttackInput()
+        end
+    end
+    return combo
 end
 
 local function isRbxFocused()
@@ -1574,7 +1903,7 @@ local function advanceBoss()
     end
 end
 
-local function getEquippedStyle()
+getEquippedStyle = function()
     local char = lp.Character
     if not char then return "Combat" end
     for _, c in ipairs(char:GetChildren()) do
@@ -1585,7 +1914,7 @@ local function getEquippedStyle()
     return "Combat"
 end
 
-local function getActiveQuest()
+getActiveQuest = function()
     local pData = ReplicatedStorage:FindFirstChild("Player_Service")
         and ReplicatedStorage.Player_Service:FindFirstChild("Data")
         and ReplicatedStorage.Player_Service.Data:FindFirstChild(lp.Name)
@@ -1641,7 +1970,7 @@ end
 local PanicVK = 113
 local panicStop
 
-local function getDialogueUI()
+getDialogueUI = function()
     local holder = lp.PlayerGui:FindFirstChild("ComponentsHolder")
     local frame = holder and holder:FindFirstChild("DialogueFrame")
     local actual = frame and frame:FindFirstChild("Actual")
@@ -1675,7 +2004,7 @@ end
 
 local GameMouse = lp:GetMouse()
 
-local function uiClick(target)
+uiClick = function(target)
     local gx = target.AbsolutePosition.X + target.AbsoluteSize.X * 0.5
     local gy = target.AbsolutePosition.Y + target.AbsoluteSize.Y * 0.5
     if not (mousemoverel and mouse1press and mouse1release) then
@@ -1791,7 +2120,7 @@ local function pickChoice(choices, pickBoss)
     return nil
 end
 
-local function collectChoices(actual)
+collectChoices = function(actual)
     local holder = actual:FindFirstChild("ButtonHolder")
     local choices = {}
     if not holder then return choices end
@@ -2543,7 +2872,8 @@ end)
 
 local FarmMobsTab = win:Tab("AutoFarm", "sword")
 local FarmBossTab = win:Tab("Boss Farm & Defense", "skull")
-local QuestTab = win:Tab("Mob Farm", "sword")
+local QuestTab = win:Tab("Mob Farm", "bug")
+local SkillsTab = win:Tab("Auto Skills", "lightning-bolt")
 local TeleportTab = win:Tab("Teleports", "map")
 local ChestTab = win:Tab("Chests & Loot", "gift-box")
 local ESPTab = win:Tab("ESP & Visuals", "eye")
@@ -2552,6 +2882,7 @@ local MiscTab = win:Tab("Settings", "gear")
 
 local FarmMobsSec = FarmMobsTab:Section("Quest Cycle", "Full")
 local FarmBossSec = FarmBossTab:Section("Boss Fight", "Full")
+local FarmSkillsSec = SkillsTab:Section("Combat Skills", "Full")
 local QuestSec = QuestTab:Section("Mob Farm", "Full")
 local TeleportSec = TeleportTab:Section("Travel", "Full")
 local ChestSec = ChestTab:Section("Loot", "Full")
@@ -2602,6 +2933,34 @@ QuestWaitSlider = FarmMobsSec:Slider("Quest Wait Time", 30, 1, 1, 120, "s", func
     State.QuestWaitTime = tonumber(val) or 30
 end)
 QuestWaitSlider:SetVisible(State.QuestWait)
+
+FarmMobsSec:Dropdown("Crow Inventory Slot", {"2"}, {"1", "2", "3", "4", "5"}, false, function(val)
+    State.CrowSlot = tonumber(type(val) == "table" and val[1] or val) or 2
+end)
+
+FarmMobsSec:Toggle("Crow Farm", false, function(val)
+    State.CrowFarm = val
+    State.CrowPhase = "idle"
+    State.CrowTarget = nil
+    State.CrowQuestId = nil
+    State.CrowPreviousQuestId = nil
+    State.CrowSawBoss = false
+    State.CrowNextAt = 0
+    if val then
+        State.AutoFarmBoss = false
+        State.AutoFarmMobs = false
+        State.FullAutoFarm = false
+        State.AutoQuestTasks = false
+        pcall(function() hAutoFarmMobs:Set(false) end)
+        pcall(function() hAutoFarmBoss:Set(false) end)
+        pcall(function() hFullAutoFarm:Set(false) end)
+        UI:Notify({ Title = "Crow Farm", Content = "Selects a boss from the crow menu; Mother Bear is skipped", Type = "success", Duration = 4 })
+    else
+        releaseAutoSkills()
+        if keyrelease then pcall(function() keyrelease(84) end) end
+        UI:Notify({ Title = "Crow Farm", Content = "Disabled", Type = "warn", Duration = 2 })
+    end
+end)
 
 FarmMobsSec:Toggle("Spam Z & X (sword skills)", false, function(val)
     State.SpamZX = val
@@ -2677,9 +3036,10 @@ hAutoFarmBoss = FarmBossSec:Toggle("Auto-Farm Selected Boss", false, function(va
     if val then
         State.AutoFarmMobs = false
         UI:Notify({ Title = "Boss Farm Active", Content = "Queue: " .. table.concat(State.BossOrder or {}, " > "), Type = "success", Duration = 3 })
-    else
-        State.activeBoss = nil
-        if keyrelease then
+            else
+                State.activeBoss = nil
+                releaseAutoSkills()
+                if keyrelease then
             pcall(function()
                 keyrelease(102)
                 keyrelease(70)
@@ -2745,6 +3105,50 @@ end)
 FarmBossSec:Toggle("Emergency Health Safeguard", false, function(val)
     State.HealthSafeguard = val
 end)
+
+FarmSkillsSec:Slider("Skill Gap", 0.3, 0.05, 0.05, 3, "s", function(val)
+    State.SkillGap = tonumber(val) or 0.3
+end)
+
+local AutoSkillList = {
+    { Name = "Z", Key = 90 },
+    { Name = "X", Key = 88 },
+    { Name = "C", Key = 67 },
+    { Name = "V", Key = 86 },
+    { Name = "B", Key = 66 },
+    { Name = "N", Key = 78 },
+    { Name = "K", Key = 75 }
+}
+
+for _, skillDef in ipairs(AutoSkillList) do
+    local cfg = {
+        Name = skillDef.Name,
+        Key = skillDef.Key,
+        Enabled = false,
+        BlockBreaker = false,
+        Hold = 0.08,
+        Distance = 15,
+        NextAt = 0,
+        ReleaseAt = 0
+    }
+    State.SkillConfig[skillDef.Name] = cfg
+    FarmSkillsSec:Toggle("Auto " .. skillDef.Name, false, function(val)
+        cfg.Enabled = val
+        if not val and keyrelease then
+            pcall(function() keyrelease(cfg.Key) end)
+            cfg.ReleaseAt = 0
+        end
+    end)
+    FarmSkillsSec:Toggle(skillDef.Name .. " Block Breaker", false, function(val)
+        cfg.BlockBreaker = val
+    end)
+    FarmSkillsSec:Slider(skillDef.Name .. " Hold", 0.08, 0.02, 0.02, 1, "s", function(val)
+        cfg.Hold = tonumber(val) or 0.08
+    end)
+    FarmSkillsSec:Slider(skillDef.Name .. " Range", 15, 1, 1, 120, "studs", function(val)
+        cfg.Distance = tonumber(val) or 15
+    end)
+end
 
 FarmBossSec:Button("Scan Bosses on Server", function()
     local total = 0
@@ -3787,7 +4191,8 @@ task.spawn(function()
                     char = lp.Character
                     hum = char and char:FindFirstChildOfClass("Humanoid")
                     hrp = char and char:FindFirstChild("HumanoidRootPart")
-                until char and hum and hum.Health > 0 and hrp
+                until (char and hum and hum.Health > 0 and hrp) or not State.Running or not State.AutoFarmMobs
+                if not State.Running or not State.AutoFarmMobs then return end
                 task.wait(0.6)
                 local dest = getEntityLocation(State.SelectedMob)
                 smartTeleportToEntity(State.SelectedMob, dest)
@@ -3835,6 +4240,8 @@ task.spawn(function()
                         end)
 
                         local now = os.clock()
+                        local currentDist = (tPos - hrp.Position).Magnitude
+                        autoSkillStep(now, currentDist, target.Model)
                         if now >= (State.atkNext or 0) then
                             State.atkNext = now + (State.FastAttack and 0.12 or (State.MobAttackDelay > 0 and State.MobAttackDelay or 0.3))
                             if not targetBlocking(target.Model) then
@@ -3842,7 +4249,7 @@ task.spawn(function()
                                 pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
-                                    if mouse1click then mouse1click() end
+                                    clickAttackInput()
                                 end
                             end
                         end
@@ -3889,12 +4296,30 @@ task.spawn(function()
                     char = lp.Character
                     hum = char and char:FindFirstChildOfClass("Humanoid")
                     hrp = char and char:FindFirstChild("HumanoidRootPart")
-                until char and hum and hum.Health > 0 and hrp
+                until (char and hum and hum.Health > 0 and hrp) or not State.Running or not State.AutoFarmBoss
+                if not State.Running or not State.AutoFarmBoss then return end
                 task.wait(0.6)
                 local cbn = State.activeBoss or currentBossName()
                 if cbn then
-                    local dest = getEntityLocation(cbn)
-                    smartTeleportToEntity(cbn, dest)
+                    State.activeBoss = cbn
+                    State.atkNext = 0
+                    State.lastBossAttack = 0
+                    combo = 1
+                    releaseAutoSkills()
+                    local liveTargets = getTargets(cbn)
+                    local liveTarget = nil
+                    for _, candidate in ipairs(liveTargets) do
+                        local exact = candidate.Name and candidate.Name:lower() == cbn:lower()
+                        if exact or candidate.Boss then
+                            liveTarget = candidate
+                            break
+                        end
+                    end
+                    if liveTarget and liveTarget.Root and vec3Ok(liveTarget.Root.Position) then
+                        safeTeleport(liveTarget.Root.Position + Vector3.new(0, 3, 0))
+                    else
+                        smartTeleportToEntity(cbn, getEntityLocation(cbn))
+                    end
                 end
                 task.wait(1.0)
             end
@@ -3942,6 +4367,7 @@ task.spawn(function()
                     
                     while State.Running and State.AutoFarmBoss and target.Humanoid and (target.Humanoid.Health or 0) > 0 do
                         if not hum or (hum.Health or 0) <= 0 or not char.Parent then
+                            releaseAutoSkills()
                             break
                         end
                         if iskeypressed and iskeypressed(PanicVK) then
@@ -3972,6 +4398,8 @@ task.spawn(function()
                         end)
 
                         local now = os.clock()
+                        local currentDist = (bPos - hrp.Position).Magnitude
+                        autoSkillStep(now, currentDist, target.Model)
                         if now >= (State.atkNext or 0) then
                             State.atkNext = now + (State.FastAttack and 0.12 or 0.3)
                             if not targetBlocking(target.Model) then
@@ -3980,7 +4408,7 @@ task.spawn(function()
                                 if dist2 <= (State.SwingReach or 20) then
                                     combo = sendCombatAttack(char, style, combo)
                                     State.lastBossAttack = os.clock()
-                                    if mouse1click then mouse1click() end
+                                    clickAttackInput()
                                 end
                             end
                         end
@@ -4001,7 +4429,11 @@ task.spawn(function()
                         end
                         State.pendingLoot = { pos = lootPos, t = os.clock() }
                     elseif not bossDead then
-                        advanceBoss()
+                        -- Keep the current boss selected after player death or a
+                        -- temporary interruption. Rotation happens after boss loot.
+                        State.activeBoss = bossName
+                        State.atkNext = 0
+                        releaseAutoSkills()
                     end
                 else
                     if State.pendingLoot or State.lootPhase or State.collect then
@@ -4083,6 +4515,7 @@ task.spawn(function()
         elseif not State.AutoLoot then
     State.pendingLoot = nil
     State.lootPhase = nil
+    releaseAutoSkills()
     State.activeBoss = nil
             if State.collect then collectStop() end
         end
@@ -4258,6 +4691,8 @@ task.spawn(function()
                                 end)
 
                                 local now = os.clock()
+                                local currentDist = (tPos - hrp.Position).Magnitude
+                                autoSkillStep(now, currentDist, target.Model)
                                 if now >= (State.atkNext or 0) then
                                     State.atkNext = now + (State.FastAttack and 0.12 or 0.3)
                                     if not targetBlocking(target.Model) then
@@ -4265,7 +4700,7 @@ task.spawn(function()
                                         pcall(function() dist2 = (tPos - hrp.Position).Magnitude end)
                                         if dist2 <= (State.SwingReach or 20) then
                                             combo = sendCombatAttack(char, style, combo)
-                                            if mouse1click then mouse1click() end
+                                            clickAttackInput()
                                         end
                                     end
                                 end
@@ -4442,6 +4877,23 @@ task.spawn(function()
             task.wait(State.SkillSpamInterval)
         else
             task.wait(0.5)
+        end
+    end
+end)
+
+task.spawn(function()
+    local combo = 1
+    while State.Running do
+        if State.CrowFarm then
+            local ok, nextCombo = pcall(crowFarmStep, os.clock(), combo)
+            if ok and nextCombo then
+                combo = nextCombo
+            elseif not ok then
+                warn("[Crow Farm] " .. tostring(nextCombo))
+            end
+            task.wait(0.08)
+        else
+            task.wait(0.25)
         end
     end
 end)
