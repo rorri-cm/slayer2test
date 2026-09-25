@@ -28,6 +28,13 @@ local State = {
     MobBehindDistance = 2.4,
     MobAttackDelay = 0,
     AutoFarmBoss = false,
+    AutoDungeon = false,
+    DungeonCardNextAt = 0,
+    DungeonLastPicked = nil,
+    DungeonLastScan = 0,
+    DungeonTargets = {},
+    DungeonSecondWindRoundsLeft = 0,
+    DungeonHealthLowLatched = false,
     CrowFarm = false,
     CrowSlot = 2,
     CrowSwordSlot = 1,
@@ -1239,6 +1246,288 @@ local function sendCombatAttack(char, style, combo)
         RemoteEvent:FireServer("Combat_Service", style, nxt, false, 0, false, nil)
     end)
     return nxt
+end
+
+local function dungeonAttribute(object, name, fallback)
+    local ok, value = pcall(function() return object:GetAttribute(name) end)
+    if ok and value ~= nil then return value end
+    return fallback
+end
+
+local function dungeonCardScore(card, prioritizeSecondWind)
+    local title = tostring(dungeonAttribute(card, "Title", card.Name) or "")
+    local description = tostring(dungeonAttribute(card, "Description", "") or "")
+    local cardType = tostring(dungeonAttribute(card, "Type", "") or "")
+    local stat = tostring(dungeonAttribute(card, "Stat", "") or "")
+    local allText = (title .. " " .. description .. " " .. cardType .. " " .. stat):lower()
+    local compactText = allText:gsub("[%s_%-]", "")
+
+    if compactText:find("secondwind", 1, true) then
+        return prioritizeSecondWind and 1000000 or -50000
+    end
+
+    if compactText:find("bossrush", 1, true) then return 960000 end
+    if allText:find("ascension", 1, true) then return 950000 end
+    if compactText:find("luckydraw", 1, true) then return 900000 end
+
+    local rarityValue = dungeonAttribute(card, "Rarity", 1)
+    local rarity = tonumber(rarityValue) or 1
+    local rarityName = tostring(rarityValue):lower()
+    local isLegendary = allText:find("legendary", 1, true) ~= nil
+        or rarity == 5 or rarityName:find("legendary", 1, true) ~= nil
+    if isLegendary then
+        if compactText:find("attackspeed", 1, true) then
+            return 930000
+        end
+        if allText:find("damage", 1, true) then return 920000 end
+        if compactText:find("maxhealth", 1, true)
+            or allText:find("health", 1, true) then
+            return 910000
+        end
+    end
+
+    local score = 0
+    -- In the game's rarity table, 5 is Legendary (gold) and 6 is Mythic (red).
+    if rarity == 6 or rarityName:find("mythic", 1, true) then
+        score = score + 70000
+    elseif isLegendary then
+        score = score + 60000
+    end
+
+    local penalties = {
+        "cannot dash", "can't dash", "no dash", "double jump", "no jumping",
+        "cannot jump", "less health", "reduced health", "max health reduced",
+        "lose health", "health is reduced", "take more damage", "damage taken",
+        "slower", "reduced damage", "less damage", "enemies deal more"
+    }
+    local harmful = false
+    for _, phrase in ipairs(penalties) do
+        if allText:find(phrase, 1, true) then harmful = true break end
+    end
+    if harmful then
+        score = score - 100000
+    else
+        score = score + 10000
+        if allText:find("x1.2", 1, true) or allText:find("1.2x", 1, true) then
+            score = score + 25000
+        end
+        if allText:find("heal", 1, true) or allText:find("health", 1, true)
+            or allText:find("regen", 1, true) or allText:find("points", 1, true) then
+            score = score + 10000
+        end
+    end
+    return score
+end
+
+local function getDungeonOfferGui(cardName)
+    local playerGui = lp:FindFirstChild("PlayerGui")
+    local components = playerGui and playerGui:FindFirstChild("ComponentsHolder")
+    local main = components and components:FindFirstChild("MainNotificationFrame")
+    local offersGui = main and main:FindFirstChild("OuwigaharaOffers")
+    if not offersGui then return nil end
+
+    local cardFrame = offersGui:FindFirstChild(cardName)
+    if not cardFrame then
+        for _, object in ipairs(offersGui:GetDescendants()) do
+            if object.Name == cardName and object.ClassName == "Frame" then
+                cardFrame = object
+                break
+            end
+        end
+    end
+    if not cardFrame then return nil end
+
+    for _, object in ipairs(cardFrame:GetDescendants()) do
+        if object.ClassName == "TextButton" or object.ClassName == "ImageButton" then
+            return object
+        end
+    end
+    return cardFrame
+end
+
+local function chooseDungeonCard(now)
+    if now < (State.DungeonCardNextAt or 0) then return false end
+    local playerOffers = lp:FindFirstChild("OuwigaharaOffers")
+    if not playerOffers then return false end
+
+    -- Picked is a boolean in this offer object; false must not pause dungeon combat.
+    if dungeonAttribute(playerOffers, "Picked", false) == true then
+        State.DungeonCardNextAt = now + 0.35
+        return false
+    end
+
+    local best, bestScore = nil, -math.huge
+    for _, offer in ipairs(playerOffers:GetChildren()) do
+        local name = tostring(dungeonAttribute(offer, "Title", offer.Name) or offer.Name)
+        local desc = tostring(dungeonAttribute(offer, "Description", "") or "")
+        local combined = (name .. " " .. desc):lower()
+        if not combined:find("mother bear", 1, true)
+            and name:lower() ~= "reroll" then
+            local score = dungeonCardScore(offer, (State.DungeonSecondWindRoundsLeft or 0) > 0)
+            if score > bestScore then
+                best, bestScore = offer, score
+            end
+        end
+    end
+    if not best then return false end
+
+    local button = getDungeonOfferGui(best.Name)
+    if not button then
+        State.DungeonCardNextAt = now + 0.25
+        return false
+    end
+    uiClick(button)
+    State.DungeonLastPicked = best.Name
+    State.DungeonCardNextAt = now + 0.75
+    if (State.DungeonSecondWindRoundsLeft or 0) > 0 then
+        State.DungeonSecondWindRoundsLeft = State.DungeonSecondWindRoundsLeft - 1
+    end
+    local title = tostring(dungeonAttribute(best, "Title", best.Name) or best.Name)
+    UI:Notify({ Title = "Auto Dungeon", Content = "Picked " .. title, Type = "success", Duration = 2 })
+    return true
+end
+
+local DungeonUnmarkedTemporaryTargets = {}
+for _, mobName in ipairs(RegularMobsList) do
+    if mobName ~= "All Regular Mobs" then
+        DungeonUnmarkedTemporaryTargets[mobName:lower()] = true
+    end
+end
+for _, bossName in ipairs(BossMobsList) do
+    if bossName ~= "All Bosses" then
+        DungeonUnmarkedTemporaryTargets[bossName:lower()] = true
+    end
+end
+-- Keep this alias for servers that use the name the user reported.
+DungeonUnmarkedTemporaryTargets["cache trainee"] = true
+
+local function scanDungeonActiveFolder(folder, requireOuwigaharaMark, result)
+    if not folder then return end
+    for _, item in ipairs(folder:GetChildren()) do
+        local model = item:FindFirstChildOfClass("Model") or (item.ClassName == "Model" and item)
+        if not model then
+            for _, child in ipairs(item:GetChildren()) do
+                if child.ClassName == "Model" and child:FindFirstChildOfClass("Humanoid") then
+                    model = child
+                    break
+                end
+            end
+        end
+        if model and not isPlayerModel(model) then
+            local marker = model:FindFirstChild("OuwigaharaMark") or item:FindFirstChild("OuwigaharaMark")
+            local explicitlyAllowed = DungeonUnmarkedTemporaryTargets[item.Name:lower()] == true
+                or DungeonUnmarkedTemporaryTargets[model.Name:lower()] == true
+            if not requireOuwigaharaMark or marker or explicitlyAllowed then
+                local humanoid = model:FindFirstChildOfClass("Humanoid")
+                local root = model:FindFirstChild("HumanoidRootPart") or findBasePart(model)
+                if humanoid and root and (humanoid.Health or 0) > 0 then
+                    result[#result + 1] = {
+                        Model = model,
+                        Humanoid = humanoid,
+                        Root = root,
+                        Name = item.Name,
+                        Boss = isBossModel(model)
+                    }
+                end
+            end
+        end
+    end
+end
+
+local function getDungeonTargets(now)
+    if now - (State.DungeonLastScan or 0) < 0.3 then
+        return State.DungeonTargets or {}
+    end
+    State.DungeonLastScan = now
+    local result = {}
+    for _, containerName in ipairs({ "Humanoids", "Debree" }) do
+        local container = Workspace:FindFirstChild(containerName)
+        local regions = container and container:FindFirstChild("Regions")
+        if regions then
+            local dungeonRegion = regions:FindFirstChild("Ouwigahara")
+            scanDungeonActiveFolder(dungeonRegion and dungeonRegion:FindFirstChild("ActiveNpcs"), false, result)
+            local temporary = regions:FindFirstChild("Temporary")
+            scanDungeonActiveFolder(temporary and temporary:FindFirstChild("ActiveNpcs"), true, result)
+        end
+    end
+    State.DungeonTargets = result
+    return result
+end
+
+local function dungeonFarmStep(now, combo)
+    if not State.AutoDungeon then return combo end
+    if pauseFarmWhenUnfocused() then return combo end
+
+    local char = lp.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    if humanoid and (humanoid.MaxHealth or 0) > 0 and (humanoid.Health or 0) > 0 then
+        local healthRatio = humanoid.Health / humanoid.MaxHealth
+        if State.DungeonHealthLowLatched then
+            if healthRatio >= 0.85 then
+                State.DungeonHealthLowLatched = false
+            end
+        elseif healthRatio <= 0.75 then
+            State.DungeonHealthLowLatched = true
+            State.DungeonSecondWindRoundsLeft = 2
+            UI:Notify({
+                Title = "Auto Dungeon",
+                Content = "Health dropped to 75% or less; prioritizing Second Wind for 2 card rounds",
+                Type = "warn",
+                Duration = 3
+            })
+        end
+    end
+
+    if chooseDungeonCard(now) then
+        releaseAimLock()
+        releaseAutoSkills()
+        return combo
+    end
+
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not humanoid or humanoid.Health <= 0 or not root then
+        releaseAimLock()
+        releaseAutoSkills()
+        return combo
+    end
+
+    local targets = getDungeonTargets(now)
+    local target, bestDistance = nil, math.huge
+    for _, candidate in ipairs(targets) do
+        if candidate.Humanoid and (candidate.Humanoid.Health or 0) > 0 then
+            local distance = (candidate.Root.Position - root.Position).Magnitude
+            if distance < bestDistance then
+                target, bestDistance = candidate, distance
+            end
+        end
+    end
+    if not target then
+        releaseAimLock()
+        releaseAutoSkills()
+        return combo -- wait for the next floor wave or card offer; do not teleport out
+    end
+
+    local targetPosition = target.Root.Position
+    if bestDistance > 80 then
+        safeTeleport(targetPosition + Vector3.new(0, 3, 0))
+        State.atkNext = 0
+        return combo
+    end
+
+    applyStance(root, target.Root, targetPosition, State.DefenseMode, State.BossHeightOffset or 3.8)
+    aimLockStep(target.Model, target.Root)
+    pcall(function()
+        char:SetAttribute("last_cmbat", 0)
+        target.Model:SetAttribute("last_cmbat", 0)
+    end)
+    autoSkillStep(now, bestDistance, target.Model)
+    if now >= (State.atkNext or 0) and bestDistance <= (State.SwingReach or 20)
+        and not targetBlocking(target.Model) then
+        State.atkNext = now + 0.3
+        combo = sendCombatAttack(char, getEquippedStyle(), combo)
+        clickAttackInput()
+    end
+    return combo
 end
 
 local function bossNameFromCrowText(text)
@@ -3045,6 +3334,7 @@ State.drawConn = espConn
 local FarmMobsTab = win:Tab("AutoFarm", "sword")
 local FarmBossTab = win:Tab("Boss Farm & Defense", "skull")
 local QuestTab = win:Tab("Mob Farm", "bug")
+local DungeonTab = win:Tab("Dungeon", "layers")
 local SkillsTab = win:Tab("Auto Skills", "lightning-bolt")
 local TeleportTab = win:Tab("Teleports", "map")
 local ChestTab = win:Tab("Chests & Loot", "gift-box")
@@ -3055,16 +3345,19 @@ local FarmMobsSec = FarmMobsTab:Section("Quest Cycle", "Full")
 local FarmBossSec = FarmBossTab:Section("Boss Fight", "Full")
 local FarmSkillsSec = SkillsTab:Section("Combat Skills", "Full")
 local QuestSec = QuestTab:Section("Mob Farm", "Full")
+local DungeonSec = DungeonTab:Section("Ouwigahara Dungeon", "Full")
 local TeleportSec = TeleportTab:Section("Travel", "Full")
 local ChestSec = ChestTab:Section("Loot", "Full")
 local ESPSec = ESPTab:Section("Visuals", "Full")
 local MiscSec = MiscTab:Section("General", "Full")
 local ConfigSec = MiscTab:Section("Config Profiles", "Full")
 
-local hAutoFarmMobs, hAutoFarmBoss
+local hAutoFarmMobs, hAutoFarmBoss, hAutoDungeon, hCrowFarm
 local hFullAutoFarm = FarmMobsSec:Toggle("Full AutoFarm (Quest Cycle)", false, function(val)
     State.FullAutoFarm = val
     if val then
+        State.AutoDungeon = false
+        pcall(function() hAutoDungeon:Set(false) end)
         State.AutoFarmMobs = false
         State.AutoFarmBoss = false
         pcall(function() hAutoFarmMobs:Set(false) end)
@@ -3075,6 +3368,31 @@ local hFullAutoFarm = FarmMobsSec:Toggle("Full AutoFarm (Quest Cycle)", false, f
         UI:Notify({ Title = "Full AutoFarm", Content = "Stopped", Type = "warn", Duration = 2 })
     end
 end)
+
+hAutoDungeon = DungeonSec:Toggle("Auto Dungeon", false, function(val)
+    State.AutoDungeon = val
+    if val then
+        State.CrowFarm = false
+        State.AutoFarmMobs = false
+        State.AutoFarmBoss = false
+        State.FullAutoFarm = false
+        State.AutoQuestTasks = false
+        pcall(function() hAutoFarmMobs:Set(false) end)
+        pcall(function() hAutoFarmBoss:Set(false) end)
+        pcall(function() hFullAutoFarm:Set(false) end)
+        pcall(function() hCrowFarm:Set(false) end)
+        State.DungeonLastPicked = nil
+        State.DungeonLastScan = 0
+        State.DungeonSecondWindRoundsLeft = 0
+        State.DungeonHealthLowLatched = false
+        UI:Notify({ Title = "Auto Dungeon", Content = "Combat and card priorities enabled", Type = "success", Duration = 3 })
+    else
+        releaseAimLock()
+        releaseAutoSkills()
+        UI:Notify({ Title = "Auto Dungeon", Content = "Disabled", Type = "warn", Duration = 2 })
+    end
+end)
+DungeonSec:Info("Farms active dungeon mobs and bosses, then picks a prioritized reward card.")
 
 FarmMobsSec:Dropdown("Select Quest", {State.SelectedQuest}, QuestOptions, false, function(val)
     State.SelectedQuest = type(val) == "table" and val[1] or val
@@ -3112,7 +3430,7 @@ FarmMobsSec:Dropdown("Crow Hunt Sword Slot", {"1"}, {"1", "2", "3", "4", "5"}, f
     State.CrowSwordSlot = tonumber(type(val) == "table" and val[1] or val) or 1
 end)
 
-local hCrowFarm = FarmMobsSec:Toggle("Crow Farm", false, function(val)
+hCrowFarm = FarmMobsSec:Toggle("Crow Farm", false, function(val)
     State.CrowFarm = val
     State.CrowPhase = "idle"
     State.CrowTarget = nil
@@ -3121,6 +3439,8 @@ local hCrowFarm = FarmMobsSec:Toggle("Crow Farm", false, function(val)
     State.CrowSawBoss = false
     State.CrowNextAt = 0
     if val then
+        State.AutoDungeon = false
+        pcall(function() hAutoDungeon:Set(false) end)
         State.AutoFarmBoss = false
         State.AutoFarmMobs = false
         State.FullAutoFarm = false
@@ -3208,6 +3528,8 @@ end, nil, true)
 hAutoFarmBoss = FarmBossSec:Toggle("Auto-Farm Selected Boss", false, function(val)
     State.AutoFarmBoss = val
     if val then
+        State.AutoDungeon = false
+        pcall(function() hAutoDungeon:Set(false) end)
         State.AutoFarmMobs = false
         UI:Notify({ Title = "Boss Farm Active", Content = "Queue: " .. table.concat(State.BossOrder or {}, " > "), Type = "success", Duration = 3 })
             else
@@ -3333,6 +3655,8 @@ end)
 hAutoFarmMobs = QuestSec:Toggle("Auto-Farm Selected Mob", false, function(val)
     State.AutoFarmMobs = val
     if val then
+        State.AutoDungeon = false
+        pcall(function() hAutoDungeon:Set(false) end)
         State.AutoFarmBoss = false
         UI:Notify({ Title = "Mob Farm Active", Content = "Hunting " .. State.SelectedMob, Type = "success", Duration = 3 })
     else
@@ -3673,7 +3997,7 @@ local ConfigNameWidget = nil
 local savedConfigDropdown = nil
 local configFolderPath = "Slayers2/configs"
 local ConfigStateKeys = {
-    "AutoFarmMobs", "SelectedMob", "MobDefenseMode", "MobHeightOffset", "MobBehindDistance",
+    "AutoDungeon", "AutoFarmMobs", "SelectedMob", "MobDefenseMode", "MobHeightOffset", "MobBehindDistance",
     "MobAttackDelay", "AutoFarmBoss",
     "SelectedBoss", "BossOrder", "bossIdx", "activeBoss", "DefenseMode", "BossHeightOffset",
     "SkipBlocking", "SmoothMove", "MoveSpeed", "WarpAbove", "SwingReach", "AutoLoot",
@@ -3811,7 +4135,10 @@ local function loadNamedConfig(name)
         pcall(function() hAutoFarmMobs:Set(false) end)
         pcall(function() hAutoFarmBoss:Set(false) end)
         pcall(function() hCrowFarm:Set(false) end)
-        if State.CrowFarm then
+        pcall(function() hAutoDungeon:Set(false) end)
+        if State.AutoDungeon then
+            hAutoDungeon:Set(true)
+        elseif State.CrowFarm then
             hCrowFarm:Set(true)
         elseif State.FullAutoFarm then
             hFullAutoFarm:Set(true)
@@ -5200,6 +5527,23 @@ task.spawn(function()
             task.wait(0.15)
         else
             task.wait(0.5)
+        end
+    end
+end)
+
+task.spawn(function()
+    local combo = 1
+    while State.Running do
+        if State.AutoDungeon then
+            local ok, nextCombo = pcall(dungeonFarmStep, os.clock(), combo)
+            if ok and nextCombo then
+                combo = nextCombo
+            elseif not ok then
+                warn("[Auto Dungeon] " .. tostring(nextCombo))
+            end
+            task.wait(0.08)
+        else
+            task.wait(0.25)
         end
     end
 end)
