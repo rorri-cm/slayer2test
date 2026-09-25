@@ -216,6 +216,7 @@ local RemoteEvent = SignalEvent and SignalEvent:FindFirstChild("Event")
 
 local RegionSpawns = {
     ["Bandit"] = Vector3.new(-287, 1224, -1008),
+    ["Windy Peak Bandit"] = Vector3.new(-287, 1224, -1008),
     ["Zuko"] = Vector3.new(-450, 1245, -950),
     ["Civilian"] = Vector3.new(-650, 1245, -1100),
     ["*Civilian*"] = Vector3.new(-650, 1245, -1100),
@@ -259,6 +260,7 @@ local RegionSpawns = {
 
 local RegularMobsList = {
     "Bandit",
+    "Windy Peak Bandit",
     "Civilian",
     "*Civilian*",
     "Mizunoto",
@@ -1254,6 +1256,30 @@ local function dungeonAttribute(object, name, fallback)
     return fallback
 end
 
+local function dungeonPointMultiplier(card, allText)
+    for _, attributeName in ipairs({ "PointMultiplier", "PointsMultiplier", "ScoreMultiplier" }) do
+        local value = tonumber(dungeonAttribute(card, attributeName, nil))
+        if value and value > 0 then
+            if value > 100 then return value / 100 end
+            if value > 10 then return 1 + (value / 100) end
+            return value
+        end
+    end
+
+    if not allText:find("point", 1, true) and not allText:find("score", 1, true) then
+        return nil
+    end
+
+    local multiplierText = allText:gsub("×", "x")
+    local multiplier = tonumber(multiplierText:match("x%s*(%d+%.?%d*)"))
+        or tonumber(multiplierText:match("(%d+%.?%d*)%s*x"))
+    if multiplier then return multiplier end
+
+    local percent = tonumber(multiplierText:match("(%d+%.?%d*)%s*%%"))
+    if percent then return 1 + (percent / 100) end
+    return nil
+end
+
 local function dungeonCardScore(card, prioritizeSecondWind)
     local title = tostring(dungeonAttribute(card, "Title", card.Name) or "")
     local description = tostring(dungeonAttribute(card, "Description", "") or "")
@@ -1263,7 +1289,13 @@ local function dungeonCardScore(card, prioritizeSecondWind)
     local compactText = allText:gsub("[%s_%-]", "")
 
     if compactText:find("secondwind", 1, true) then
-        return prioritizeSecondWind and 1000000 or -50000
+        return prioritizeSecondWind and 2000000 or -50000
+    end
+
+    local pointMultiplier = dungeonPointMultiplier(card, allText)
+    if pointMultiplier then
+        -- Sort multiplier rewards by their actual value, not by a fixed x1.2 match.
+        return 1000000 + (math.min(math.max(pointMultiplier, 0), 9) * 100000)
     end
 
     if compactText:find("bossrush", 1, true) then return 960000 end
@@ -1275,42 +1307,48 @@ local function dungeonCardScore(card, prioritizeSecondWind)
     local rarityName = tostring(rarityValue):lower()
     local isLegendary = allText:find("legendary", 1, true) ~= nil
         or rarity == 5 or rarityName:find("legendary", 1, true) ~= nil
-    if isLegendary then
-        if compactText:find("attackspeed", 1, true) then
-            return 930000
-        end
-        if allText:find("damage", 1, true) then return 920000 end
-        if compactText:find("maxhealth", 1, true)
-            or allText:find("health", 1, true) then
-            return 910000
-        end
-    end
-
-    local score = 0
-    -- In the game's rarity table, 5 is Legendary (gold) and 6 is Mythic (red).
-    if rarity == 6 or rarityName:find("mythic", 1, true) then
-        score = score + 70000
-    elseif isLegendary then
-        score = score + 60000
-    end
+    local isRed = rarity == 6 or rarityName:find("mythic", 1, true) ~= nil
+        or rarityName == "red"
+    local isBlue = rarity == 3 or rarityName:find("rare", 1, true) ~= nil
+        or rarityName == "blue"
 
     local penalties = {
         "cannot dash", "can't dash", "no dash", "double jump", "no jumping",
         "cannot jump", "less health", "reduced health", "max health reduced",
         "lose health", "health is reduced", "take more damage", "damage taken",
-        "slower", "reduced damage", "less damage", "enemies deal more"
+        "slower", "reduced damage", "less damage", "enemies deal more",
+        "reduced attack speed", "less attack speed", "slower attacks"
     }
     local harmful = false
     for _, phrase in ipairs(penalties) do
         if allText:find(phrase, 1, true) then harmful = true break end
     end
+
+    if not harmful and (isRed or isLegendary or isBlue) then
+        local hasDamageBuff = allText:find("damage", 1, true) or allText:find("dmg", 1, true)
+        local hasHealthBuff = allText:find("health", 1, true) or allText:find("heal", 1, true)
+            or allText:find("hp", 1, true) or allText:find("life", 1, true)
+        local hasAttackSpeedBuff = compactText:find("attackspeed", 1, true)
+            or allText:find("faster attacks", 1, true)
+        if hasDamageBuff or hasHealthBuff or hasAttackSpeedBuff then
+            local rarityScore = isRed and 880000 or (isLegendary and 870000 or 860000)
+            return rarityScore
+        end
+    end
+
+    local score = 0
+    -- In the game's rarity table, 3 is Rare (blue), 5 Legendary, and 6 Mythic (red).
+    if isRed then
+        score = score + 70000
+    elseif isLegendary then
+        score = score + 60000
+    elseif isBlue then
+        score = score + 50000
+    end
     if harmful then
         score = score - 100000
     else
         score = score + 10000
-        if allText:find("x1.2", 1, true) or allText:find("1.2x", 1, true) then
-            score = score + 25000
-        end
         if allText:find("heal", 1, true) or allText:find("health", 1, true)
             or allText:find("regen", 1, true) or allText:find("points", 1, true) then
             score = score + 10000
@@ -1360,9 +1398,12 @@ local function chooseDungeonCard(now)
     for _, offer in ipairs(playerOffers:GetChildren()) do
         local name = tostring(dungeonAttribute(offer, "Title", offer.Name) or offer.Name)
         local desc = tostring(dungeonAttribute(offer, "Description", "") or "")
-        local combined = (name .. " " .. desc):lower()
+        local cardName = offer.Name:lower()
+        local title = name:lower()
+        local combined = (cardName .. " " .. title .. " " .. desc):lower()
         if not combined:find("mother bear", 1, true)
-            and name:lower() ~= "reroll" then
+            and not cardName:find("reroll", 1, true)
+            and not title:find("reroll", 1, true) then
             local score = dungeonCardScore(offer, (State.DungeonSecondWindRoundsLeft or 0) > 0)
             if score > bestScore then
                 best, bestScore = offer, score
